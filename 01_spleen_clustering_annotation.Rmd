@@ -1,0 +1,251 @@
+---
+title: "01 - Spleen clustering, annotation, and manual marker validation"
+author: "snRNA-seq publication pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+# 设置报告运行环境，并加载流程共用函数。
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+knitr::opts_knit$set(root.dir = here::here())
+source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+```
+
+## Configuration
+
+```{r libraries}
+# 检查并加载脾脏聚类、SingleR 注释和绘图所需包。
+check_packages(c(
+  "Seurat", "SeuratObject", "SingleR", "celldex", "scuttle",
+  "BiocParallel", "harmony", "dplyr", "ggplot2",
+  "patchwork", "future", "glmGamPoi", "here"
+))
+
+library(Seurat)
+library(SingleR)
+library(celldex)
+library(scuttle)
+library(BiocParallel)
+library(harmony)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(future)
+
+if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
+  RhpcBLASctl::blas_set_num_threads(1)
+  RhpcBLASctl::omp_set_num_threads(1)
+}
+
+# Seurat uses the future backend in expensive steps such as SCTransform.
+plan("multicore", workers = 6)
+options(future.fork.enable = TRUE)
+options(future.globals.maxSize = 88 * 1024^3)
+
+paths <- get_pipeline_paths()
+fig_dir <- ensure_dir(file.path(paths$fig_dir, "01_Spleen_Annotation"))
+table_dir <- ensure_dir(file.path(paths$table_dir, "01_Spleen_Annotation"))
+
+# 默认不使用样本或 mouse 作为 Harmony batch；主聚类和子聚类使用不同 PCA 维度。
+harmony_batch_var <- NULL
+dims_main <- 1:30
+dims_subset <- 1:20
+```
+
+## Load spleen object
+
+```{r load}
+# 读取 00 步骤输出的脾脏 QC 后对象。
+sc_spleen <- readRDS(file.path(paths$rds_dir, "00_spleen_qc.rds"))
+sc_spleen$Group <- normalize_group_levels(sc_spleen$Group)
+message("Spleen cells after QC: ", ncol(sc_spleen))
+```
+
+## Main clustering without sample-level Harmony
+
+```{r main_clustering}
+# 对全部脾脏细胞执行 SCTransform、PCA、邻居图、聚类和 UMAP。
+sc_spleen <- run_sctransform_embedding(
+  sc_spleen,
+  dims = dims_main,
+  resolution = 0.6,
+  harmony_batch_var = harmony_batch_var
+)
+
+p_clusters <- DimPlot(sc_spleen, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.2) +
+  labs(title = "Spleen clusters")
+print(p_clusters)
+# 保存主聚类 UMAP，供后续检查聚类结构。
+save_pub_plot(p_clusters, "01_spleen_umap_clusters", fig_dir, width = 10, height = 5)
+```
+
+## SingleR main annotation
+
+```{r singler}
+# 使用 ImmGen 参考集对脾脏细胞做 SingleR 主类别注释。
+ref_immgen <- celldex::ImmGenData()
+sc_spleen <- run_singler_main(sc_spleen, ref_immgen, workers = 6)
+sc_spleen$CellType_Fine <- sc_spleen$CellType_Main
+
+p_main <- DimPlot(sc_spleen, reduction = "umap", group.by = "CellType_Main", split.by = "Group", pt.size = 0.2) +
+  labs(title = "Spleen main annotation")
+print(p_main)
+save_pub_plot(p_main, "01_spleen_umap_main_annotation", fig_dir, width = 11, height = 6)
+
+main_table <- sc_spleen@meta.data |>
+  dplyr::count(Group, MouseID, CellType_Main, name = "Cells")
+# 输出主类别在每只 mouse 中的细胞数。
+write.csv(main_table, file.path(table_dir, "01_spleen_main_annotation_counts.csv"), row.names = FALSE)
+```
+
+## Refine B-cell compartment
+
+```{r bcell_refinement}
+# 根据 SingleR/主注释筛选 B 细胞相关标签，进入 B-cell compartment 精细聚类。
+b_labels <- grep("B cells|B cell|B lymph", unique(c(sc_spleen$CellType_SingleR_Raw, sc_spleen$CellType_Main)), value = TRUE, ignore.case = TRUE)
+b_cells_keep <- rownames(sc_spleen@meta.data)[sc_spleen$CellType_SingleR_Raw %in% b_labels | sc_spleen$CellType_Main %in% b_labels]
+if (length(b_cells_keep) < 100) stop("Too few spleen B-lineage cells for refinement. Check SingleR labels.")
+
+b_cells <- subset(sc_spleen, cells = b_cells_keep)
+DefaultAssay(b_cells) <- "RNA"
+b_cells <- run_sctransform_embedding(
+  b_cells,
+  dims = dims_subset,
+  resolution = 0.3,
+  harmony_batch_var = harmony_batch_var
+)
+
+b_map_path <- file.path(paths$map_dir, "spleen_bcell_manual_map.csv")
+b_template_path <- file.path(table_dir, "01_spleen_bcell_annotation_template_current_clusters.csv")
+# 写出当前 B 细胞聚类模板，并检查手动注释表是否覆盖所有 cluster。
+write_annotation_template(b_cells, b_map_path, b_template_path)
+b_map_check <- validate_annotation_map(b_cells, b_map_path)
+if (!isTRUE(b_map_check$ok)) {
+  stop(
+    "Spleen B-cell manual annotation map does not match current clustering. ",
+    "Review marker plots/tables and update: ", b_map_path, ". ",
+    "Current template written to: ", b_template_path, ". ",
+    "Missing clusters: ", paste(b_map_check$missing_clusters, collapse = ","), ". ",
+    "Blank labels: ", paste(b_map_check$blank_labels, collapse = ","),
+    call. = FALSE
+  )
+}
+b_cells <- apply_manual_annotation(b_cells, b_map_check$map, unknown_label = "Unknown spleen B cluster")
+
+# B 细胞 marker panel 用于验证手动 fine label 是否符合已知 marker 表达。
+spleen_b_markers <- c(
+  "Cd19", "Ms4a1", "Cd79a", "Ighd", "Ighm", "Fas", "Bcl6", "Aicda",
+  "Mki67", "Jchain", "Irf4", "Prdm1", "Sdc1", "Ighg1", "Cd80"
+)
+
+p_b_clusters <- DimPlot(b_cells, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.35) +
+  labs(title = "Spleen B-lineage subclusters")
+p_b_anno <- DimPlot(b_cells, reduction = "umap", group.by = "CellType_Fine", split.by = "Group", pt.size = 0.35) +
+  labs(title = "Spleen B-lineage manual annotation")
+p_b_dot <- make_marker_dotplot(b_cells, spleen_b_markers, group.by = "CellType_Fine", title = "Spleen B-lineage marker validation")
+
+print(p_b_clusters)
+print(p_b_anno)
+print(p_b_dot)
+
+save_pub_plot(p_b_clusters, "01_spleen_bcell_umap_clusters", fig_dir, width = 10, height = 5)
+save_pub_plot(p_b_anno, "01_spleen_bcell_umap_manual_annotation", fig_dir, width = 11, height = 6)
+save_pub_plot(p_b_dot, "01_spleen_bcell_marker_dotplot", fig_dir, width = 10, height = 5)
+
+# 同时按 cluster 和最终 fine label 输出 marker 表达验证表。
+b_validation_cluster <- marker_validation_table(b_cells, spleen_b_markers, group_col = "seurat_clusters")
+b_validation_fine <- marker_validation_table(b_cells, spleen_b_markers, group_col = "CellType_Fine")
+write.csv(b_validation_cluster, file.path(table_dir, "01_spleen_bcell_marker_validation_by_cluster.csv"), row.names = FALSE)
+write.csv(b_validation_fine, file.path(table_dir, "01_spleen_bcell_marker_validation_by_fine_label.csv"), row.names = FALSE)
+```
+
+## Refine T-cell compartment
+
+```{r tcell_refinement}
+# 根据 SingleR/主注释筛选 T 细胞相关标签，进入 T-cell compartment 精细聚类。
+t_labels <- grep("T cells|T cell|T lymph", unique(c(sc_spleen$CellType_SingleR_Raw, sc_spleen$CellType_Main)), value = TRUE, ignore.case = TRUE)
+t_cells_keep <- rownames(sc_spleen@meta.data)[sc_spleen$CellType_SingleR_Raw %in% t_labels | sc_spleen$CellType_Main %in% t_labels]
+if (length(t_cells_keep) < 100) stop("Too few spleen T-lineage cells for refinement. Check SingleR labels.")
+
+t_cells <- subset(sc_spleen, cells = t_cells_keep)
+DefaultAssay(t_cells) <- "RNA"
+t_cells <- run_sctransform_embedding(
+  t_cells,
+  dims = dims_subset,
+  resolution = 0.3,
+  harmony_batch_var = harmony_batch_var
+)
+
+t_map_path <- file.path(paths$map_dir, "spleen_tcell_manual_map.csv")
+t_template_path <- file.path(table_dir, "01_spleen_tcell_annotation_template_current_clusters.csv")
+# 写出当前 T 细胞聚类模板，并检查手动注释表是否覆盖所有 cluster。
+write_annotation_template(t_cells, t_map_path, t_template_path)
+t_map_check <- validate_annotation_map(t_cells, t_map_path)
+if (!isTRUE(t_map_check$ok)) {
+  stop(
+    "Spleen T-cell manual annotation map does not match current clustering. ",
+    "Review marker plots/tables and update: ", t_map_path, ". ",
+    "Current template written to: ", t_template_path, ". ",
+    "Missing clusters: ", paste(t_map_check$missing_clusters, collapse = ","), ". ",
+    "Blank labels: ", paste(t_map_check$blank_labels, collapse = ","),
+    call. = FALSE
+  )
+}
+t_cells <- apply_manual_annotation(t_cells, t_map_check$map, unknown_label = "Unknown spleen T cluster")
+
+# T 细胞 marker panel 用于区分 naive、memory、Tfh、Treg 和 cytotoxic T 等状态。
+spleen_t_markers <- c(
+  "Cd3d", "Cd3e", "Cd4", "Cd8a", "Sell", "Ccr7", "Cd44",
+  "Cxcr5", "Bcl6", "Icos", "Pdcd1", "Gzmb", "Prf1",
+  "Ifng", "Tbx21", "Foxp3", "Il2ra", "Ctla4"
+)
+
+p_t_clusters <- DimPlot(t_cells, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.35) +
+  labs(title = "Spleen T-cell subclusters")
+p_t_anno <- DimPlot(t_cells, reduction = "umap", group.by = "CellType_Fine", split.by = "Group", pt.size = 0.35) +
+  labs(title = "Spleen T-cell manual annotation")
+p_t_dot <- make_marker_dotplot(t_cells, spleen_t_markers, group.by = "CellType_Fine", title = "Spleen T-cell marker validation")
+
+print(p_t_clusters)
+print(p_t_anno)
+print(p_t_dot)
+
+save_pub_plot(p_t_clusters, "01_spleen_tcell_umap_clusters", fig_dir, width = 10, height = 5)
+save_pub_plot(p_t_anno, "01_spleen_tcell_umap_manual_annotation", fig_dir, width = 11, height = 6)
+save_pub_plot(p_t_dot, "01_spleen_tcell_marker_dotplot", fig_dir, width = 10, height = 5)
+
+# 同时按 cluster 和最终 fine label 输出 marker 表达验证表。
+t_validation_cluster <- marker_validation_table(t_cells, spleen_t_markers, group_col = "seurat_clusters")
+t_validation_fine <- marker_validation_table(t_cells, spleen_t_markers, group_col = "CellType_Fine")
+write.csv(t_validation_cluster, file.path(table_dir, "01_spleen_tcell_marker_validation_by_cluster.csv"), row.names = FALSE)
+write.csv(t_validation_fine, file.path(table_dir, "01_spleen_tcell_marker_validation_by_fine_label.csv"), row.names = FALSE)
+```
+
+## Merge refined labels back to spleen
+
+```{r merge_back}
+# 将 B/T 子聚类的精细标签写回完整脾脏对象。
+sc_spleen$CellType_Fine <- sc_spleen$CellType_Main
+sc_spleen$CellType_Fine[colnames(b_cells)] <- b_cells$CellType_Fine
+sc_spleen$CellType_Fine[colnames(t_cells)] <- t_cells$CellType_Fine
+
+p_fine <- DimPlot(sc_spleen, reduction = "umap", group.by = "CellType_Fine", split.by = "Group", pt.size = 0.2) +
+  labs(title = "Spleen fine annotation")
+print(p_fine)
+save_pub_plot(p_fine, "01_spleen_umap_fine_annotation", fig_dir, width = 12, height = 6)
+
+fine_table <- sc_spleen@meta.data |>
+  dplyr::count(Group, MouseID, CellType_Fine, name = "Cells")
+# 保存最终 fine annotation 计数和后续步骤使用的 RDS 对象。
+write.csv(fine_table, file.path(table_dir, "01_spleen_fine_annotation_counts.csv"), row.names = FALSE)
+
+saveRDS(sc_spleen, file.path(paths$rds_dir, "01_spleen_annotated.rds"))
+saveRDS(b_cells, file.path(paths$rds_dir, "01_spleen_bcells_refined.rds"))
+saveRDS(t_cells, file.path(paths$rds_dir, "01_spleen_tcells_refined.rds"))
+```

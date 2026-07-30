@@ -1,0 +1,126 @@
+---
+title: "03 - Manual marker validation report"
+author: "snRNA-seq publication pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+# 设置报告运行环境，并加载流程共用函数。
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+knitr::opts_knit$set(root.dir = here::here())
+source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+```
+
+## Configuration
+
+```{r libraries}
+# 检查并加载 marker 验证和绘图所需包。
+check_packages(c("Seurat", "SeuratObject", "Matrix", "dplyr", "tidyr", "ggplot2", "patchwork", "here"))
+
+library(Seurat)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(patchwork)
+
+paths <- get_pipeline_paths()
+fig_dir <- ensure_dir(file.path(paths$fig_dir, "03_Manual_Marker_Validation"))
+table_dir <- ensure_dir(file.path(paths$table_dir, "03_Manual_Marker_Validation"))
+```
+
+## Load annotated tissue objects
+
+```{r load}
+# 读取 01/02 步骤输出的最终注释对象。
+sc_spleen <- readRDS(file.path(paths$rds_dir, "01_spleen_annotated.rds"))
+sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
+```
+
+## Marker panels
+
+```{r marker_panels}
+# 汇总脾脏主要免疫细胞及 B/T 细胞状态相关 marker。
+spleen_markers <- c(
+  "Ptprc", "Cd19", "Ms4a1", "Cd79a", "Ighd", "Ighm",
+  "Fas", "Bcl6", "Aicda", "Mki67", "Jchain", "Irf4", "Prdm1", "Sdc1",
+  "Cd3d", "Cd3e", "Cd4", "Cd8a", "Sell", "Ccr7", "Cxcr5", "Icos", "Pdcd1",
+  "Foxp3", "Il2ra", "Gzmb", "Prf1", "Nkg7", "Lyz2", "Itgam", "Cst3"
+)
+
+# 汇总骨髓 B lineage、plasma、髓系和 T/NK 相关 marker。
+bm_markers <- c(
+  "Ptprc", "Vpreb1", "Dntt", "Cd79a", "Cd19", "Ms4a1", "Ighm", "Ighd",
+  "Irf4", "Prdm1", "Xbp1", "Sdc1", "Tnfrsf17", "Jchain", "Mcl1", "Slc3a2",
+  "Mki67", "Cd3d", "Cd3e", "Nkg7", "Lyz2", "S100a8", "S100a9", "Csf1r", "Cst3"
+)
+```
+
+## Spleen validation
+
+```{r spleen_validation, fig.width=13, fig.height=8}
+# 按最终 CellType_Fine 分组验证脾脏 marker 表达。
+p_spleen_dot <- make_marker_dotplot(
+  sc_spleen,
+  spleen_markers,
+  group.by = "CellType_Fine",
+  title = "Spleen manual marker validation"
+)
+print(p_spleen_dot)
+save_pub_plot(p_spleen_dot, "03_spleen_fine_label_marker_dotplot", fig_dir, width = 13, height = 8)
+
+spleen_validation <- marker_validation_table(sc_spleen, spleen_markers, group_col = "CellType_Fine")
+write.csv(spleen_validation, file.path(table_dir, "03_spleen_marker_validation_by_fine_label.csv"), row.names = FALSE)
+
+# 输出每只 mouse 的脾脏 fine label 细胞数。
+spleen_label_counts <- sc_spleen@meta.data |>
+  count(Group, MouseID, CellType_Fine, name = "Cells")
+write.csv(spleen_label_counts, file.path(table_dir, "03_spleen_fine_label_counts_by_mouse.csv"), row.names = FALSE)
+```
+
+## Bone marrow validation
+
+```{r bm_validation, fig.width=13, fig.height=8}
+# 按最终 CellType_Fine 分组验证骨髓 marker 表达。
+p_bm_dot <- make_marker_dotplot(
+  sc_bm,
+  bm_markers,
+  group.by = "CellType_Fine",
+  title = "Bone marrow manual marker validation"
+)
+print(p_bm_dot)
+save_pub_plot(p_bm_dot, "03_bm_fine_label_marker_dotplot", fig_dir, width = 13, height = 8)
+
+bm_validation <- marker_validation_table(sc_bm, bm_markers, group_col = "CellType_Fine")
+write.csv(bm_validation, file.path(table_dir, "03_bm_marker_validation_by_fine_label.csv"), row.names = FALSE)
+
+# 输出每只 mouse 的骨髓 fine label 细胞数。
+bm_label_counts <- sc_bm@meta.data |>
+  count(Group, MouseID, CellType_Fine, name = "Cells")
+write.csv(bm_label_counts, file.path(table_dir, "03_bm_fine_label_counts_by_mouse.csv"), row.names = FALSE)
+```
+
+## Manual review sheets
+
+```{r review_sheets}
+# 收集所有手动注释 map，生成一个便于人工复核的汇总表。
+map_files <- c(
+  Spleen_B_cells = file.path(paths$map_dir, "spleen_bcell_manual_map.csv"),
+  Spleen_T_cells = file.path(paths$map_dir, "spleen_tcell_manual_map.csv"),
+  BoneMarrow_B_lineage = file.path(paths$map_dir, "bm_blineage_manual_map.csv")
+)
+
+review_sheet <- bind_rows(lapply(names(map_files), function(panel) {
+  x <- read.csv(map_files[[panel]], stringsAsFactors = FALSE)
+  x$Panel <- panel
+  x
+}))
+
+write.csv(review_sheet, file.path(table_dir, "03_manual_annotation_review_sheet.csv"), row.names = FALSE)
+review_sheet
+```

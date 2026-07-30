@@ -1,0 +1,135 @@
+---
+title: "07 - Publication-ready figure and table export"
+author: "snRNA-seq publication pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+# 设置报告运行环境，并加载流程共用函数。
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+knitr::opts_knit$set(root.dir = here::here())
+source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+```
+
+## Configuration
+
+```{r libraries}
+# 检查并加载结果整理和文件导出所需包。
+check_packages(c("dplyr", "readr", "stringr", "here"))
+
+library(dplyr)
+library(readr)
+library(stringr)
+
+paths <- get_pipeline_paths()
+# publication_ready 目录集中存放论文/汇报可直接使用的图表。
+pub_root <- ensure_dir(file.path(paths$pipeline_root, "outputs", "publication_ready"))
+pub_fig_dir <- ensure_dir(file.path(pub_root, "figures"))
+pub_table_dir <- ensure_dir(file.path(pub_root, "tables"))
+```
+
+## Copy publication outputs
+
+```{r copy_outputs}
+# 收集前面步骤生成的全部 PDF/PNG 图和 CSV 表格。
+figure_files <- list.files(paths$fig_dir, pattern = "\\.(pdf|png)$", recursive = TRUE, full.names = TRUE)
+table_files <- list.files(paths$table_dir, pattern = "\\.csv$", recursive = TRUE, full.names = TRUE)
+
+# 复制文件时把子目录名写入文件名，避免不同步骤中同名文件互相覆盖。
+copy_with_prefix <- function(files, out_dir) {
+  copied <- lapply(files, function(path) {
+    rel <- sub(paste0("^", paths$fig_dir, "/?"), "", path)
+    rel <- sub(paste0("^", paths$table_dir, "/?"), "", rel)
+    out_name <- gsub("[/\\\\]", "__", rel)
+    out_path <- file.path(out_dir, out_name)
+    file.copy(path, out_path, overwrite = TRUE)
+    data.frame(Source = path, Exported = out_path, stringsAsFactors = FALSE)
+  })
+    dplyr::bind_rows(copied)
+}
+
+fig_export <- copy_with_prefix(figure_files, pub_fig_dir)
+table_export <- copy_with_prefix(table_files, pub_table_dir)
+
+# 保存图和表的导出清单，便于追踪 publication_ready 文件来源。
+write.csv(fig_export, file.path(pub_root, "publication_figure_manifest.csv"), row.names = FALSE)
+write.csv(table_export, file.path(pub_root, "publication_table_manifest.csv"), row.names = FALSE)
+```
+
+## Combined DEG table
+
+```{r combined_deg}
+# 收集 05 步骤的 edgeR pseudobulk DEG 表。
+deg_files <- list.files(
+  file.path(paths$table_dir, "05_Pseudobulk_DEG"),
+  pattern = "_edgeR_pseudobulk_DEG\\.csv$",
+  full.names = TRUE
+)
+
+combined_deg <- dplyr::bind_rows(lapply(deg_files, function(path) {
+  x <- read.csv(path, stringsAsFactors = FALSE)
+  x$SourceFile <- basename(path)
+  x
+}))
+
+if (nrow(combined_deg) > 0) {
+# 合并后按组织、细胞类型和 FDR 排序，并额外输出每类 top DEG。
+  combined_deg <- combined_deg |>
+    dplyr::arrange(Tissue, CellType, FDR, dplyr::desc(abs(logFC)))
+
+  top_deg <- combined_deg |>
+    dplyr::filter(FDR < 0.05) |>
+    dplyr::group_by(Tissue, CellType) |>
+    dplyr::slice_min(order_by = FDR, n = 25, with_ties = FALSE) |>
+    dplyr::ungroup()
+
+  write.csv(combined_deg, file.path(pub_table_dir, "Table_pseudobulk_edgeR_all_DEG.csv"), row.names = FALSE)
+  write.csv(top_deg, file.path(pub_table_dir, "Table_pseudobulk_edgeR_top_significant_DEG.csv"), row.names = FALSE)
+}
+```
+
+## Combined enrichment table
+
+```{r combined_enrichment}
+# 收集 06 步骤的 GO/KEGG 富集结果，排除 summary 文件。
+enrich_files <- list.files(
+  file.path(paths$table_dir, "06_Pseudobulk_Enrichment"),
+  pattern = "\\.(csv)$",
+  full.names = TRUE
+)
+enrich_files <- enrich_files[!grepl("summary", basename(enrich_files), ignore.case = TRUE)]
+
+combined_enrichment <- dplyr::bind_rows(lapply(enrich_files, function(path) {
+  x <- read.csv(path, stringsAsFactors = FALSE)
+  x$SourceFile <- basename(path)
+  x
+}))
+
+if (nrow(combined_enrichment) > 0) {
+# 合并所有富集条目，便于统一筛选和整理表格。
+  combined_enrichment <- combined_enrichment |>
+    dplyr::arrange(SourceFile, p.adjust)
+  write.csv(combined_enrichment, file.path(pub_table_dir, "Table_GO_KEGG_from_pseudobulk_DEG.csv"), row.names = FALSE)
+}
+```
+
+## Output manifest
+
+```{r manifest}
+# 生成 publication_ready 目录下所有导出文件的总清单。
+manifest <- dplyr::bind_rows(
+  fig_export |> dplyr::mutate(Type = "Figure"),
+  table_export |> dplyr::mutate(Type = "Table")
+) |>
+  dplyr::mutate(File = basename(Exported)) |>
+  dplyr::select(Type, File, Source, Exported)
+
+write.csv(manifest, file.path(pub_root, "publication_ready_manifest.csv"), row.names = FALSE)
+manifest
+```

@@ -1,0 +1,193 @@
+---
+title: "02 - Bone marrow clustering, annotation, and plasma cell-like validation"
+author: "snRNA-seq publication pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cosmo
+---
+
+```{r setup, include=FALSE}
+# 设置报告运行环境，并加载流程共用函数。
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
+knitr::opts_knit$set(root.dir = here::here())
+source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+```
+
+## Configuration
+
+```{r libraries}
+# 检查并加载骨髓聚类、SingleR 注释和绘图所需包。
+check_packages(c(
+  "Seurat", "SeuratObject", "SingleR", "celldex", "scuttle",
+  "BiocParallel", "harmony", "dplyr", "ggplot2",
+  "patchwork", "future", "glmGamPoi", "here"
+))
+
+library(Seurat)
+library(SingleR)
+library(celldex)
+library(scuttle)
+library(BiocParallel)
+library(harmony)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(future)
+
+if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
+  RhpcBLASctl::blas_set_num_threads(1)
+  RhpcBLASctl::omp_set_num_threads(1)
+}
+
+# Seurat uses the future backend in expensive steps such as SCTransform.
+plan("multicore", workers = 6)
+options(future.fork.enable = TRUE)
+options(future.globals.maxSize = 88 * 1024^3)
+
+paths <- get_pipeline_paths()
+fig_dir <- ensure_dir(file.path(paths$fig_dir, "02_BM_Annotation"))
+table_dir <- ensure_dir(file.path(paths$table_dir, "02_BM_Annotation"))
+
+# 默认不使用样本或 mouse 作为 Harmony batch；主聚类和子聚类使用不同 PCA 维度。
+harmony_batch_var <- NULL
+dims_main <- 1:30
+dims_subset <- 1:20
+```
+
+## Load bone marrow object
+
+```{r load}
+# 读取 00 步骤输出的骨髓 QC 后对象。
+sc_bm <- readRDS(file.path(paths$rds_dir, "00_bonemarrow_qc.rds"))
+sc_bm$Group <- normalize_group_levels(sc_bm$Group)
+message("Bone marrow cells after QC: ", ncol(sc_bm))
+```
+
+## Main clustering without sample-level Harmony
+
+```{r main_clustering}
+# 对全部骨髓细胞执行 SCTransform、PCA、邻居图、聚类和 UMAP。
+sc_bm <- run_sctransform_embedding(
+  sc_bm,
+  dims = dims_main,
+  resolution = 0.6,
+  harmony_batch_var = harmony_batch_var
+)
+
+p_clusters <- DimPlot(sc_bm, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.2) +
+  labs(title = "Bone marrow clusters")
+print(p_clusters)
+# 保存主聚类 UMAP，供后续检查聚类结构。
+save_pub_plot(p_clusters, "02_bm_umap_clusters", fig_dir, width = 10, height = 5)
+```
+
+## SingleR main annotation
+
+```{r singler}
+# 使用 ImmGen 参考集对骨髓细胞做 SingleR 主类别注释。
+ref_immgen <- celldex::ImmGenData()
+sc_bm <- run_singler_main(sc_bm, ref_immgen, workers = 6)
+sc_bm$CellType_Fine <- sc_bm$CellType_Main
+
+p_main <- DimPlot(sc_bm, reduction = "umap", group.by = "CellType_Main", split.by = "Group", pt.size = 0.2) +
+  labs(title = "Bone marrow main annotation")
+print(p_main)
+save_pub_plot(p_main, "02_bm_umap_main_annotation", fig_dir, width = 11, height = 6)
+
+main_table <- sc_bm@meta.data |>
+  dplyr::count(Group, MouseID, CellType_Main, name = "Cells")
+# 输出主类别在每只 mouse 中的细胞数。
+write.csv(main_table, file.path(table_dir, "02_bm_main_annotation_counts.csv"), row.names = FALSE)
+```
+
+## Refine B lineage and plasma cell-like compartment
+
+```{r blineage_refinement}
+# 筛选 B lineage 和 plasma 相关标签，进入骨髓 B lineage 精细聚类。
+b_labels <- grep(
+  "B cells|B cell|B lymph|plasma",
+  unique(c(sc_bm$CellType_SingleR_Raw, sc_bm$CellType_Main)),
+  value = TRUE,
+  ignore.case = TRUE
+)
+b_cells_keep <- rownames(sc_bm@meta.data)[sc_bm$CellType_SingleR_Raw %in% b_labels | sc_bm$CellType_Main %in% b_labels]
+if (length(b_cells_keep) < 100) stop("Too few bone marrow B-lineage cells for refinement. Check SingleR labels.")
+
+b_bm <- subset(sc_bm, cells = b_cells_keep)
+DefaultAssay(b_bm) <- "RNA"
+b_bm <- run_sctransform_embedding(
+  b_bm,
+  dims = dims_subset,
+  resolution = 0.5,
+  harmony_batch_var = harmony_batch_var
+)
+
+bm_map_path <- file.path(paths$map_dir, "bm_blineage_manual_map.csv")
+bm_template_path <- file.path(table_dir, "02_bm_blineage_annotation_template_current_clusters.csv")
+# 写出当前 B lineage 聚类模板，并检查手动注释表是否覆盖所有 cluster。
+write_annotation_template(b_bm, bm_map_path, bm_template_path)
+bm_map_check <- validate_annotation_map(b_bm, bm_map_path)
+if (!isTRUE(bm_map_check$ok)) {
+  stop(
+    "Bone marrow B-lineage manual annotation map does not match current clustering. ",
+    "Review marker plots/tables and update: ", bm_map_path, ". ",
+    "Current template written to: ", bm_template_path, ". ",
+    "Missing clusters: ", paste(bm_map_check$missing_clusters, collapse = ","), ". ",
+    "Blank labels: ", paste(bm_map_check$blank_labels, collapse = ","),
+    call. = FALSE
+  )
+}
+b_bm <- apply_manual_annotation(b_bm, bm_map_check$map, unknown_label = "Unknown bone marrow B-lineage cluster")
+
+# 骨髓 B lineage marker panel 用于验证 pro/pre、成熟 B、浆母和浆细胞样标签。
+bm_markers <- c(
+  "Vpreb1", "Dntt", "Cd79a", "Cd19", "Ms4a1", "Ighm", "Ighd",
+  "Irf4", "Prdm1", "Xbp1", "Sdc1", "Tnfrsf17", "Jchain",
+  "Mki67", "Mcl1", "Slc3a2"
+)
+
+p_bm_clusters <- DimPlot(b_bm, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.35) +
+  labs(title = "Bone marrow B-lineage subclusters")
+p_bm_anno <- DimPlot(b_bm, reduction = "umap", group.by = "CellType_Fine", split.by = "Group", pt.size = 0.35) +
+  labs(title = "Bone marrow B-lineage manual annotation")
+p_bm_dot <- make_marker_dotplot(b_bm, bm_markers, group.by = "CellType_Fine", title = "Bone marrow B-lineage marker validation")
+
+print(p_bm_clusters)
+print(p_bm_anno)
+print(p_bm_dot)
+
+save_pub_plot(p_bm_clusters, "02_bm_blineage_umap_clusters", fig_dir, width = 10, height = 5)
+save_pub_plot(p_bm_anno, "02_bm_blineage_umap_manual_annotation", fig_dir, width = 11, height = 6)
+save_pub_plot(p_bm_dot, "02_bm_blineage_marker_dotplot", fig_dir, width = 10, height = 5)
+
+# 同时按 cluster 和最终 fine label 输出 marker 表达验证表。
+bm_validation_cluster <- marker_validation_table(b_bm, bm_markers, group_col = "seurat_clusters")
+bm_validation_fine <- marker_validation_table(b_bm, bm_markers, group_col = "CellType_Fine")
+write.csv(bm_validation_cluster, file.path(table_dir, "02_bm_blineage_marker_validation_by_cluster.csv"), row.names = FALSE)
+write.csv(bm_validation_fine, file.path(table_dir, "02_bm_blineage_marker_validation_by_fine_label.csv"), row.names = FALSE)
+```
+
+## Merge refined labels back to bone marrow
+
+```{r merge_back}
+# 将 B lineage 子聚类的精细标签写回完整骨髓对象。
+sc_bm$CellType_Fine <- sc_bm$CellType_Main
+sc_bm$CellType_Fine[colnames(b_bm)] <- b_bm$CellType_Fine
+
+p_fine <- DimPlot(sc_bm, reduction = "umap", group.by = "CellType_Fine", split.by = "Group", pt.size = 0.2) +
+  labs(title = "Bone marrow fine annotation")
+print(p_fine)
+save_pub_plot(p_fine, "02_bm_umap_fine_annotation", fig_dir, width = 12, height = 6)
+
+fine_table <- sc_bm@meta.data |>
+  dplyr::count(Group, MouseID, CellType_Fine, name = "Cells")
+# 保存最终 fine annotation 计数和后续步骤使用的 RDS 对象。
+write.csv(fine_table, file.path(table_dir, "02_bm_fine_annotation_counts.csv"), row.names = FALSE)
+
+saveRDS(sc_bm, file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
+saveRDS(b_bm, file.path(paths$rds_dir, "02_bm_blineage_refined.rds"))
+```
