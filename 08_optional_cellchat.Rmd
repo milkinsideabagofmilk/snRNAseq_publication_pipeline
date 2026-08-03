@@ -10,15 +10,33 @@ output:
 ---
 
 ```{r setup, include=FALSE}
+# 设置报告运行环境，并加载流程共用函数。
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
-knitr::opts_knit$set(root.dir = here::here())
-source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+input_dir <- tryCatch(
+  dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
+  error = function(e) ""
+)
+root_candidates <- unique(normalizePath(
+  c(input_dir, getwd(), file.path(getwd(), "snRNAseq_publication_pipeline")),
+  mustWork = FALSE
+))
+pipeline_root <- root_candidates[
+  file.exists(file.path(root_candidates, "R", "pipeline_helpers.R"))
+][1]
+if (is.na(pipeline_root)) {
+  stop("Cannot locate the pipeline root containing R/pipeline_helpers.R", call. = FALSE)
+}
+knitr::opts_knit$set(root.dir = pipeline_root)
+source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ```
 
 ## Configuration
 
 ```{r libraries}
+# 从集中参数文件读取 CellChat 设置。
+source(file.path(pipeline_root, "config", "pipeline_params.R"))
+
 check_packages(c("Seurat", "SeuratObject", "CellChat", "patchwork", "dplyr", "ggplot2", "future", "here"))
 
 library(Seurat)
@@ -28,12 +46,12 @@ library(dplyr)
 library(ggplot2)
 library(future)
 
-# CellChat has high peak memory use; 6 workers is a balanced default for 9950X3D + 96G RAM.
-plan("multicore", workers = 6)
+# CellChat has high peak memory use; workers 上限由 config/pipeline_params.R 的 n_workers 控制。
+plan("multicore", workers = n_workers)
 options(future.fork.enable = TRUE)
-options(future.globals.maxSize = 88 * 1024^3)
+options(future.globals.maxSize = future_globals_maxsize)
 
-paths <- get_pipeline_paths()
+paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "08_CellChat"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "08_CellChat"))
 ```
@@ -41,7 +59,7 @@ table_dir <- ensure_dir(file.path(paths$table_dir, "08_CellChat"))
 ## CellChat helper
 
 ```{r helper}
-create_cellchat <- function(seurat_obj, group_name, min_cells = 10) {
+create_cellchat <- function(seurat_obj, group_name, min_cells = cellchat_min_cells) {
   cells <- rownames(seurat_obj@meta.data)[normalize_group_levels(seurat_obj$Group) == group_name]
   sub_obj <- subset(seurat_obj, cells = cells)
   DefaultAssay(sub_obj) <- "RNA"
@@ -94,8 +112,9 @@ run_cellchat_pair <- function(obj, tissue_name) {
 sc_spleen <- readRDS(file.path(paths$rds_dir, "01_spleen_annotated.rds"))
 chat_spleen <- run_cellchat_pair(sc_spleen, "Spleen")
 
-spleen_sources <- intersect(c("Tfh cells", "Naive CD4 T cells", "Central memory CD4 T cells"), unique(sc_spleen$CellType_Fine))
-spleen_targets <- intersect(c("GC B cells", "Plasma cell-like", "Naive B cells", "Memory B cell-like"), unique(sc_spleen$CellType_Fine))
+# sources/targets 清单由 config/pipeline_params.R 定义（cellchat_spleen_sources / cellchat_spleen_targets）。
+spleen_sources <- intersect(cellchat_spleen_sources, unique(sc_spleen$CellType_Fine))
+spleen_targets <- intersect(cellchat_spleen_targets, unique(sc_spleen$CellType_Fine))
 
 if (length(spleen_sources) > 0 && length(spleen_targets) > 0) {
   p_spleen_bubble <- netVisual_bubble(
@@ -116,7 +135,8 @@ if (length(spleen_sources) > 0 && length(spleen_targets) > 0) {
 sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 chat_bm <- run_cellchat_pair(sc_bm, "BoneMarrow")
 
-bm_targets <- intersect(c("Plasma cell-like", "Plasmablast-like", "Naive or mature B cells"), unique(sc_bm$CellType_Fine))
+# targets 清单由 config/pipeline_params.R 定义（cellchat_bm_targets）。
+bm_targets <- intersect(cellchat_bm_targets, unique(sc_bm$CellType_Fine))
 if (length(bm_targets) > 0) {
   p_bm_bubble <- netVisual_bubble(
     chat_bm,

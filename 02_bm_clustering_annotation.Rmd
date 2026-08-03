@@ -12,14 +12,31 @@ output:
 ```{r setup, include=FALSE}
 # 设置报告运行环境，并加载流程共用函数。
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
-knitr::opts_knit$set(root.dir = here::here())
-source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+input_dir <- tryCatch(
+  dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
+  error = function(e) ""
+)
+root_candidates <- unique(normalizePath(
+  c(input_dir, getwd(), file.path(getwd(), "snRNAseq_publication_pipeline")),
+  mustWork = FALSE
+))
+pipeline_root <- root_candidates[
+  file.exists(file.path(root_candidates, "R", "pipeline_helpers.R"))
+][1]
+if (is.na(pipeline_root)) {
+  stop("Cannot locate the pipeline root containing R/pipeline_helpers.R", call. = FALSE)
+}
+knitr::opts_knit$set(root.dir = pipeline_root)
+source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ```
 
 ## Configuration
 
 ```{r libraries}
+# 从集中参数文件读取聚类、注释和 marker panel 参数。
+source(file.path(pipeline_root, "config", "pipeline_params.R"))
+
 # 检查并加载骨髓聚类、SingleR 注释和绘图所需包。
 check_packages(c(
   "Seurat", "SeuratObject", "SingleR", "celldex", "scuttle",
@@ -44,18 +61,15 @@ if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
 }
 
 # Seurat uses the future backend in expensive steps such as SCTransform.
-plan("multicore", workers = 6)
+plan("multicore", workers = n_workers)
 options(future.fork.enable = TRUE)
-options(future.globals.maxSize = 88 * 1024^3)
+options(future.globals.maxSize = future_globals_maxsize)
 
-paths <- get_pipeline_paths()
+paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "02_BM_Annotation"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "02_BM_Annotation"))
 
-# 默认不使用样本或 mouse 作为 Harmony batch；主聚类和子聚类使用不同 PCA 维度。
-harmony_batch_var <- NULL
-dims_main <- 1:30
-dims_subset <- 1:20
+# 聚类维度、分辨率、Harmony 设置与 marker panel 统一由 config/pipeline_params.R 定义。
 ```
 
 ## Load bone marrow object
@@ -74,7 +88,7 @@ message("Bone marrow cells after QC: ", ncol(sc_bm))
 sc_bm <- run_sctransform_embedding(
   sc_bm,
   dims = dims_main,
-  resolution = 0.6,
+  resolution = cluster_res_main,
   harmony_batch_var = harmony_batch_var
 )
 
@@ -90,7 +104,7 @@ save_pub_plot(p_clusters, "02_bm_umap_clusters", fig_dir, width = 10, height = 5
 ```{r singler}
 # 使用 ImmGen 参考集对骨髓细胞做 SingleR 主类别注释。
 ref_immgen <- celldex::ImmGenData()
-sc_bm <- run_singler_main(sc_bm, ref_immgen, workers = 6)
+sc_bm <- run_singler_main(sc_bm, ref_immgen, workers = n_workers)
 sc_bm$CellType_Fine <- sc_bm$CellType_Main
 
 p_main <- DimPlot(sc_bm, reduction = "umap", group.by = "CellType_Main", split.by = "Group", pt.size = 0.2) +
@@ -115,14 +129,14 @@ b_labels <- grep(
   ignore.case = TRUE
 )
 b_cells_keep <- rownames(sc_bm@meta.data)[sc_bm$CellType_SingleR_Raw %in% b_labels | sc_bm$CellType_Main %in% b_labels]
-if (length(b_cells_keep) < 100) stop("Too few bone marrow B-lineage cells for refinement. Check SingleR labels.")
+if (length(b_cells_keep) < min_cells_for_refinement) stop("Too few bone marrow B-lineage cells for refinement. Check SingleR labels.")
 
 b_bm <- subset(sc_bm, cells = b_cells_keep)
 DefaultAssay(b_bm) <- "RNA"
 b_bm <- run_sctransform_embedding(
   b_bm,
   dims = dims_subset,
-  resolution = 0.5,
+  resolution = cluster_res_bm_subset,
   harmony_batch_var = harmony_batch_var
 )
 
@@ -131,30 +145,25 @@ bm_template_path <- file.path(table_dir, "02_bm_blineage_annotation_template_cur
 # 写出当前 B lineage 聚类模板，并检查手动注释表是否覆盖所有 cluster。
 write_annotation_template(b_bm, bm_map_path, bm_template_path)
 bm_map_check <- validate_annotation_map(b_bm, bm_map_path)
-if (!isTRUE(bm_map_check$ok)) {
+if (!isTRUE(b_map_check$ok)) {
   stop(
     "Bone marrow B-lineage manual annotation map does not match current clustering. ",
     "Review marker plots/tables and update: ", bm_map_path, ". ",
     "Current template written to: ", bm_template_path, ". ",
-    "Missing clusters: ", paste(bm_map_check$missing_clusters, collapse = ","), ". ",
-    "Blank labels: ", paste(bm_map_check$blank_labels, collapse = ","),
+    "Missing clusters: ", paste(b_map_check$missing_clusters, collapse = ","), ". ",
+    "Blank labels: ", paste(b_map_check$blank_labels, collapse = ","),
     call. = FALSE
   )
 }
 b_bm <- apply_manual_annotation(b_bm, bm_map_check$map, unknown_label = "Unknown bone marrow B-lineage cluster")
 
-# 骨髓 B lineage marker panel 用于验证 pro/pre、成熟 B、浆母和浆细胞样标签。
-bm_markers <- c(
-  "Vpreb1", "Dntt", "Cd79a", "Cd19", "Ms4a1", "Ighm", "Ighd",
-  "Irf4", "Prdm1", "Xbp1", "Sdc1", "Tnfrsf17", "Jchain",
-  "Mki67", "Mcl1", "Slc3a2"
-)
+# 骨髓 B lineage marker panel 由 config/pipeline_params.R 提供，用于验证 pro/pre、成熟 B、浆母和浆细胞样标签。
 
 p_bm_clusters <- DimPlot(b_bm, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.35) +
   labs(title = "Bone marrow B-lineage subclusters")
 p_bm_anno <- DimPlot(b_bm, reduction = "umap", group.by = "CellType_Fine", split.by = "Group", pt.size = 0.35) +
   labs(title = "Bone marrow B-lineage manual annotation")
-p_bm_dot <- make_marker_dotplot(b_bm, bm_markers, group.by = "CellType_Fine", title = "Bone marrow B-lineage marker validation")
+p_bm_dot <- make_marker_dotplot(b_bm, bm_blineage_markers, group.by = "CellType_Fine", title = "Bone marrow B-lineage marker validation")
 
 print(p_bm_clusters)
 print(p_bm_anno)
@@ -165,8 +174,8 @@ save_pub_plot(p_bm_anno, "02_bm_blineage_umap_manual_annotation", fig_dir, width
 save_pub_plot(p_bm_dot, "02_bm_blineage_marker_dotplot", fig_dir, width = 10, height = 5)
 
 # 同时按 cluster 和最终 fine label 输出 marker 表达验证表。
-bm_validation_cluster <- marker_validation_table(b_bm, bm_markers, group_col = "seurat_clusters")
-bm_validation_fine <- marker_validation_table(b_bm, bm_markers, group_col = "CellType_Fine")
+bm_validation_cluster <- marker_validation_table(b_bm, bm_blineage_markers, group_col = "seurat_clusters")
+bm_validation_fine <- marker_validation_table(b_bm, bm_blineage_markers, group_col = "CellType_Fine")
 write.csv(bm_validation_cluster, file.path(table_dir, "02_bm_blineage_marker_validation_by_cluster.csv"), row.names = FALSE)
 write.csv(bm_validation_fine, file.path(table_dir, "02_bm_blineage_marker_validation_by_fine_label.csv"), row.names = FALSE)
 ```

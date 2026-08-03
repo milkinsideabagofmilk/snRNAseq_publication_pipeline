@@ -12,14 +12,31 @@ output:
 ```{r setup, include=FALSE}
 # 设置报告运行环境，并加载流程共用函数。
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
-knitr::opts_knit$set(root.dir = here::here())
-source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+input_dir <- tryCatch(
+  dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
+  error = function(e) ""
+)
+root_candidates <- unique(normalizePath(
+  c(input_dir, getwd(), file.path(getwd(), "snRNAseq_publication_pipeline")),
+  mustWork = FALSE
+))
+pipeline_root <- root_candidates[
+  file.exists(file.path(root_candidates, "R", "pipeline_helpers.R"))
+][1]
+if (is.na(pipeline_root)) {
+  stop("Cannot locate the pipeline root containing R/pipeline_helpers.R", call. = FALSE)
+}
+knitr::opts_knit$set(root.dir = pipeline_root)
+source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ```
 
 ## Configuration
 
 ```{r libraries}
+# 从集中参数文件读取 marker panel。
+source(file.path(pipeline_root, "config", "pipeline_params.R"))
+
 # 检查并加载 marker 验证和绘图所需包。
 check_packages(c("Seurat", "SeuratObject", "Matrix", "dplyr", "tidyr", "ggplot2", "patchwork", "here"))
 
@@ -29,7 +46,7 @@ library(tidyr)
 library(ggplot2)
 library(patchwork)
 
-paths <- get_pipeline_paths()
+paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "03_Manual_Marker_Validation"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "03_Manual_Marker_Validation"))
 ```
@@ -45,20 +62,8 @@ sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 ## Marker panels
 
 ```{r marker_panels}
-# 汇总脾脏主要免疫细胞及 B/T 细胞状态相关 marker。
-spleen_markers <- c(
-  "Ptprc", "Cd19", "Ms4a1", "Cd79a", "Ighd", "Ighm",
-  "Fas", "Bcl6", "Aicda", "Mki67", "Jchain", "Irf4", "Prdm1", "Sdc1",
-  "Cd3d", "Cd3e", "Cd4", "Cd8a", "Sell", "Ccr7", "Cxcr5", "Icos", "Pdcd1",
-  "Foxp3", "Il2ra", "Gzmb", "Prf1", "Nkg7", "Lyz2", "Itgam", "Cst3"
-)
-
-# 汇总骨髓 B lineage、plasma、髓系和 T/NK 相关 marker。
-bm_markers <- c(
-  "Ptprc", "Vpreb1", "Dntt", "Cd79a", "Cd19", "Ms4a1", "Ighm", "Ighd",
-  "Irf4", "Prdm1", "Xbp1", "Sdc1", "Tnfrsf17", "Jchain", "Mcl1", "Slc3a2",
-  "Mki67", "Cd3d", "Cd3e", "Nkg7", "Lyz2", "S100a8", "S100a9", "Csf1r", "Cst3"
-)
+# 脾脏和骨髓的复核 marker panel 统一由 config/pipeline_params.R 定义
+# （spleen_validation_markers / bm_validation_markers）。
 ```
 
 ## Spleen validation
@@ -67,14 +72,14 @@ bm_markers <- c(
 # 按最终 CellType_Fine 分组验证脾脏 marker 表达。
 p_spleen_dot <- make_marker_dotplot(
   sc_spleen,
-  spleen_markers,
+  spleen_validation_markers,
   group.by = "CellType_Fine",
   title = "Spleen manual marker validation"
 )
 print(p_spleen_dot)
 save_pub_plot(p_spleen_dot, "03_spleen_fine_label_marker_dotplot", fig_dir, width = 13, height = 8)
 
-spleen_validation <- marker_validation_table(sc_spleen, spleen_markers, group_col = "CellType_Fine")
+spleen_validation <- marker_validation_table(sc_spleen, spleen_validation_markers, group_col = "CellType_Fine")
 write.csv(spleen_validation, file.path(table_dir, "03_spleen_marker_validation_by_fine_label.csv"), row.names = FALSE)
 
 # 输出每只 mouse 的脾脏 fine label 细胞数。
@@ -89,14 +94,14 @@ write.csv(spleen_label_counts, file.path(table_dir, "03_spleen_fine_label_counts
 # 按最终 CellType_Fine 分组验证骨髓 marker 表达。
 p_bm_dot <- make_marker_dotplot(
   sc_bm,
-  bm_markers,
+  bm_validation_markers,
   group.by = "CellType_Fine",
   title = "Bone marrow manual marker validation"
 )
 print(p_bm_dot)
 save_pub_plot(p_bm_dot, "03_bm_fine_label_marker_dotplot", fig_dir, width = 13, height = 8)
 
-bm_validation <- marker_validation_table(sc_bm, bm_markers, group_col = "CellType_Fine")
+bm_validation <- marker_validation_table(sc_bm, bm_validation_markers, group_col = "CellType_Fine")
 write.csv(bm_validation, file.path(table_dir, "03_bm_marker_validation_by_fine_label.csv"), row.names = FALSE)
 
 # 输出每只 mouse 的骨髓 fine label 细胞数。

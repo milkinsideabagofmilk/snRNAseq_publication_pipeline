@@ -12,14 +12,31 @@ output:
 ```{r setup, include=FALSE}
 # 设置报告运行环境，并加载流程共用函数。
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
-knitr::opts_knit$set(root.dir = here::here())
-source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+input_dir <- tryCatch(
+  dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
+  error = function(e) ""
+)
+root_candidates <- unique(normalizePath(
+  c(input_dir, getwd(), file.path(getwd(), "snRNAseq_publication_pipeline")),
+  mustWork = FALSE
+))
+pipeline_root <- root_candidates[
+  file.exists(file.path(root_candidates, "R", "pipeline_helpers.R"))
+][1]
+if (is.na(pipeline_root)) {
+  stop("Cannot locate the pipeline root containing R/pipeline_helpers.R", call. = FALSE)
+}
+knitr::opts_knit$set(root.dir = pipeline_root)
+source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ```
 
 ## Configuration
 
 ```{r libraries}
+# 从集中参数文件读取富集分析设置。
+source(file.path(pipeline_root, "config", "pipeline_params.R"))
+
 # 检查并加载 GO/KEGG 富集分析和绘图所需包。
 check_packages(c(
   "dplyr", "ggplot2", "clusterProfiler", "org.Mm.eg.db",
@@ -32,15 +49,11 @@ library(clusterProfiler)
 library(org.Mm.eg.db)
 library(enrichplot)
 
-paths <- get_pipeline_paths()
+paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "06_Pseudobulk_Enrichment"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "06_Pseudobulk_Enrichment"))
 
-deg_method_for_enrichment <- "edgeR"
-# 富集分析使用显著 DEG，并设置最少可映射基因数以避免不稳定结果。
-fdr_cutoff <- 0.05
-logfc_cutoff <- 0.5
-min_genes_for_enrichment <- 10
+# DEG 方法选择、显著性阈值与富集 cutoffs 统一由 config/pipeline_params.R 定义。
 ```
 
 ## Load pseudobulk DEG results
@@ -116,8 +129,8 @@ run_enrichment_for_result <- function(res, tissue, celltype, method) {
         OrgDb = org.Mm.eg.db,
         ont = "BP",
         pAdjustMethod = "BH",
-        pvalueCutoff = 0.05,
-        qvalueCutoff = 0.20,
+        pvalueCutoff = go_pvalue_cutoff,
+        qvalueCutoff = go_qvalue_cutoff,
         readable = TRUE
       ),
       error = function(e) NULL
@@ -129,7 +142,7 @@ run_enrichment_for_result <- function(res, tissue, celltype, method) {
         gene = entrez,
         universe = universe_ids,
         organism = "mmu",
-        pvalueCutoff = 0.05,
+        pvalueCutoff = kegg_pvalue_cutoff,
         pAdjustMethod = "BH"
       ),
       error = function(e) NULL

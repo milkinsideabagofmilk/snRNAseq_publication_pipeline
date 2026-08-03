@@ -8,7 +8,8 @@ script_dir <- if (!is.na(file_arg)) dirname(normalizePath(file_arg)) else "snRNA
 project_root <- normalizePath(file.path(script_dir, ".."))
 setwd(project_root)
 
-run_optional_cellchat <- FALSE
+# 从集中参数文件读取 run_optional_cellchat 等设置。
+source(file.path(script_dir, "config", "pipeline_params.R"))
 
 rmd_files <- c(
   "snRNAseq_publication_pipeline/00_data_loading_soupx_qc.Rmd",

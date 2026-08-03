@@ -12,14 +12,31 @@ output:
 ```{r setup, include=FALSE}
 # 设置报告运行环境，并加载流程共用函数。
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-if (!requireNamespace("here", quietly = TRUE)) install.packages("here")
-knitr::opts_knit$set(root.dir = here::here())
-source(here::here("snRNAseq_publication_pipeline", "R", "pipeline_helpers.R"))
+# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+input_dir <- tryCatch(
+  dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
+  error = function(e) ""
+)
+root_candidates <- unique(normalizePath(
+  c(input_dir, getwd(), file.path(getwd(), "snRNAseq_publication_pipeline")),
+  mustWork = FALSE
+))
+pipeline_root <- root_candidates[
+  file.exists(file.path(root_candidates, "R", "pipeline_helpers.R"))
+][1]
+if (is.na(pipeline_root)) {
+  stop("Cannot locate the pipeline root containing R/pipeline_helpers.R", call. = FALSE)
+}
+knitr::opts_knit$set(root.dir = pipeline_root)
+source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ```
 
 ## Configuration
 
 ```{r libraries}
+# 从集中参数文件读取导出设置。
+source(file.path(pipeline_root, "config", "pipeline_params.R"))
+
 # 检查并加载结果整理和文件导出所需包。
 check_packages(c("dplyr", "readr", "stringr", "here"))
 
@@ -27,7 +44,7 @@ library(dplyr)
 library(readr)
 library(stringr)
 
-paths <- get_pipeline_paths()
+paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 # publication_ready 目录集中存放论文/汇报可直接使用的图表。
 pub_root <- ensure_dir(file.path(paths$pipeline_root, "outputs", "publication_ready"))
 pub_fig_dir <- ensure_dir(file.path(pub_root, "figures"))
@@ -86,7 +103,7 @@ if (nrow(combined_deg) > 0) {
   top_deg <- combined_deg |>
     dplyr::filter(FDR < 0.05) |>
     dplyr::group_by(Tissue, CellType) |>
-    dplyr::slice_min(order_by = FDR, n = 25, with_ties = FALSE) |>
+    dplyr::slice_min(order_by = FDR, n = top_n_deg_per_celltype, with_ties = FALSE) |>
     dplyr::ungroup()
 
   write.csv(combined_deg, file.path(pub_table_dir, "Table_pseudobulk_edgeR_all_DEG.csv"), row.names = FALSE)
