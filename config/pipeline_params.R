@@ -1,31 +1,32 @@
-# pipeline_params.R — snRNA-seq publication pipeline 集中参数文件
+# pipeline_params.R — snRNA-seq publication pipeline central parameter file
 #
-# 关键参数的唯一定义处：调整流程参数只改本文件，不要改各 Rmd。
-# 00–08 各 Rmd 在 configuration chunk 开头 source() 本文件；render_all.R 同样读取。
-# 修改本文件属于行为性修改，须同步 README.md 实时总结（见 AGENT.md 维护规则）。
+# Single source of truth for key parameters: to adjust pipeline parameters, edit only this file, not the individual Rmds.
+# Each Rmd in steps 00–08 calls source() on this file at the start of its configuration chunk; render_all.R reads it as well.
+# Modifying this file is a behavioral change and must be accompanied by an up-to-date summary in README.md (see AGENT.md maintenance rules).
 
-## ===== 全局 =====
-seed <- 20260717L                       # 随机种子（00 逐样本派生 scDblFinder/SoupX 种子）
-n_workers <- 6L                         # 外层并行 workers 上限（00 样本循环、SingleR）
-cellchat_workers <- 2L                  # 08 CellChat 专用 workers：峰值内存随 worker 数线性叠加，
-                                        # 2026-08-06 用全局 n_workers=6 时 computeCommunProb 把
-                                        # WSL 82GB 内存吃光触发 OOM（宿主机仅 94GB），降为 2
-parallel_backend <- "multicore"         # 样本级并行后端：multicore(fork，推荐) / multisession / sequential。
-                                        # 当前环境为 WSL2，PSOCK(socket) 集群对长任务收集结果会挂死
-                                        # （2026-08-03 用 base R parallel::makeCluster("PSOCK") 复现确认），
-                                        # 因此禁用 multisession；multicore 走 fork，不受影响且更快。
-future_globals_maxsize <- 88 * 1024^3   # future.globals.maxSize（SCTransform/CellChat 大对象）
+## ===== Global =====
+seed <- 20260717L                       # random seed (00 derives per-sample scDblFinder/SoupX seeds from it)
+n_workers <- 6L                         # upper limit on outer-level parallel workers (00 sample loop, SingleR)
+cellchat_workers <- 2L                  # dedicated workers for 08 CellChat: peak memory scales linearly with worker count;
+                                        # on 2026-08-06, with global n_workers=6, computeCommunProb exhausted the
+                                        # WSL 82GB memory allocation and triggered OOM (host has only 94GB), so reduced to 2
+parallel_backend <- "multicore"         # sample-level parallel backend: multicore (fork, recommended) / multisession / sequential.
+                                        # The current environment is WSL2, where PSOCK (socket) clusters hang when
+                                        # collecting results of long tasks (reproduced and confirmed on 2026-08-03
+                                        # with base R parallel::makeCluster("PSOCK")), so multisession is disabled;
+                                        # multicore uses fork and is unaffected and faster.
+future_globals_maxsize <- 88 * 1024^3   # future.globals.maxSize (large objects in SCTransform/CellChat)
 
-## ===== 00 数据读取 / scDblFinder / SoupX / QC =====
-pre_qc_min_counts <- 200                # 轻预过滤：仅去除空滴/极低复杂度 barcode
+## ===== 00 Data loading / scDblFinder / SoupX / QC =====
+pre_qc_min_counts <- 200                # light pre-filtering: removes only empty droplets / very-low-complexity barcodes
 pre_qc_min_features <- 20
-doublet_rate_per_1000 <- 0.004          # DNBelab C4 经验双联体率：每 1000 细胞 0.4%
-doublet_rate_sd <- 0                    # scDblFinder dbr.sd；0 = 强先验
-doublet_rate_warning_difference <- 0.05 # 观察率 vs 期望率告警阈值（绝对差）
-doublet_rate_warning_fold <- 2          # 观察率 vs 期望率告警阈值（倍数）
-remove_scDblFinder_doublets <- FALSE    # first-pass 默认只标记不剔除；复核分数分布后再开
+doublet_rate_per_1000 <- 0.004          # DNBelab C4 empirical doublet rate: 0.4% per 1000 cells
+doublet_rate_sd <- 0                    # scDblFinder dbr.sd; 0 = strong prior
+doublet_rate_warning_difference <- 0.05 # observed vs expected rate warning threshold (absolute difference)
+doublet_rate_warning_fold <- 2          # observed vs expected rate warning threshold (fold change)
+remove_scDblFinder_doublets <- FALSE    # first-pass default is to flag only, not remove; enable after reviewing the score distribution
 
-# max_percent_mt 两组织统一 0.5%（2026-08-10 用户拍板：所有样本 mt<0.5%；原脾 5%/髓 3%）
+# max_percent_mt unified at 0.5% for both tissues (decided by the user on 2026-08-10: mt<0.5% for all samples; previously 5% spleen / 3% marrow)
 qc_thresholds <- list(
   Spleen = list(
     min_features = 100, max_features = 3000,
@@ -39,14 +40,14 @@ qc_thresholds <- list(
   )
 )
 
-## ===== 01 / 02 聚类与注释 =====
-harmony_batch_var <- NULL        # 真正的技术批次列名；NULL = 不跑 Harmony。禁止 SampleID/MouseID
-dims_main <- 1:30                # 主聚类 PCA 维度
-dims_subset <- 1:20              # compartment 重聚类 PCA 维度
-cluster_res_main <- 0.6          # 主聚类分辨率
-cluster_res_spleen_subset <- 0.3 # 脾 B/T compartment 重聚类分辨率
-cluster_res_bm_subset <- 0.5     # 骨髓 B lineage compartment 重聚类分辨率
-min_cells_for_refinement <- 100  # compartment 细胞数下限，低于则停止并提示检查 SingleR 标签
+## ===== 01 / 02 Clustering and annotation =====
+harmony_batch_var <- NULL        # true technical batch column name; NULL = do not run Harmony. SampleID/MouseID are forbidden
+dims_main <- 1:30                # PCA dimensions for main clustering
+dims_subset <- 1:20              # PCA dimensions for compartment re-clustering
+cluster_res_main <- 0.6          # main clustering resolution
+cluster_res_spleen_subset <- 0.3 # spleen B/T compartment re-clustering resolution
+cluster_res_bm_subset <- 0.5     # bone marrow B lineage compartment re-clustering resolution
+min_cells_for_refinement <- 100  # lower bound on compartment cell count; below this, stop and prompt to check SingleR labels
 
 spleen_b_markers <- c(
   "Cd19", "Ms4a1", "Cd79a", "Ighd", "Ighm", "Fas", "Bcl6", "Aicda",
@@ -65,7 +66,7 @@ bm_blineage_markers <- c(
   "Mki67", "Mcl1", "Slc3a2"
 )
 
-## ===== 03 marker 复核 panel =====
+## ===== 03 marker validation panel =====
 spleen_validation_markers <- c(
   "Ptprc", "Cd19", "Ms4a1", "Cd79a", "Ighd", "Ighm",
   "Fas", "Bcl6", "Aicda", "Mki67", "Jchain", "Irf4", "Prdm1", "Sdc1",
@@ -79,8 +80,8 @@ bm_validation_markers <- c(
   "Mki67", "Cd3d", "Cd3e", "Nkg7", "Lyz2", "S100a8", "S100a9", "Csf1r", "Cst3"
 )
 
-## ===== 04 细胞比例 =====
-# focus 列表之外的类型在图中合并为 "Other cells"；CellType_Fine 统计不受影响。
+## ===== 04 Cell proportions =====
+# Types outside the focus lists are merged into "Other cells" in plots; CellType_Fine statistics are unaffected.
 spleen_focus <- c(
   "Naive B cells", "Activated or transitional B cells", "Memory B cell-like",
   "Early GC or pre-GC B cells", "GC B cells", "Cycling B cells", "Plasma cell-like",
@@ -97,8 +98,8 @@ bm_focus <- c(
 )
 
 ## ===== 05 pseudobulk DEG =====
-min_cells_per_mouse <- 20   # 每只 mouse 目标细胞数下限，低于则该 mouse 不参与 pseudobulk
-fdr_cutoff <- 0.05          # 显著 DEG 判定阈值（05 与 06 共用）
+min_cells_per_mouse <- 20   # lower bound on target cells per mouse; below this, the mouse is excluded from pseudobulk
+fdr_cutoff <- 0.05          # significance threshold for DEG calls (shared by 05 and 06)
 logfc_cutoff <- 0.5
 
 target_spleen <- c(
@@ -118,18 +119,18 @@ target_bm <- c(
   "Activated B cells"
 )
 
-## ===== 06 GO/KEGG 富集 =====
-deg_method_for_enrichment <- "edgeR"  # 富集输入的 DEG 方法（05 结果中的方法名）
-min_genes_for_enrichment <- 10        # 可映射 Entrez 基因数下限，低于则跳过
+## ===== 06 GO/KEGG enrichment =====
+deg_method_for_enrichment <- "edgeR"  # DEG method used as enrichment input (method name in the 05 results)
+min_genes_for_enrichment <- 10        # lower bound on mappable Entrez genes; below this, skip
 go_pvalue_cutoff <- 0.05
 go_qvalue_cutoff <- 0.20
 kegg_pvalue_cutoff <- 0.05
 
-## ===== 07 publication 导出 =====
-top_n_deg_per_celltype <- 25          # 合并 DEG 表中每个组织+细胞类型保留的 top DEG 数
+## ===== 07 publication export =====
+top_n_deg_per_celltype <- 25          # number of top DEGs retained per tissue + cell type in the merged DEG table
 
 ## ===== 08 CellChat =====
-cellchat_min_cells <- 10              # filterCommunication 的 min.cells
+cellchat_min_cells <- 10              # min.cells for filterCommunication
 cellchat_spleen_sources <- c("Tfh cells", "Naive CD4 T cells", "Central memory CD4 T cells")
 cellchat_spleen_targets <- c("GC B cells", "Plasma cell-like", "Naive B cells", "Memory B cell-like")
 cellchat_bm_targets <- c("Plasma cell-like", "Plasmablast-like", "Naive or mature B cells")

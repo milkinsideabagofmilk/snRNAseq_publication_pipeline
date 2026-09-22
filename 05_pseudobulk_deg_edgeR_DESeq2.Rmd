@@ -10,9 +10,9 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 设置报告运行环境，并加载流程共用函数。
+# Set up the report runtime environment and load the shared pipeline functions.
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or the working directory (compatible with both render and interactive runs, without relying on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -34,10 +34,10 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ## Configuration
 
 ```{r libraries}
-# 从集中参数文件读取 pseudobulk 设置与 DEG 判定阈值。
+# Read pseudobulk settings and DEG significance thresholds from the central parameter file.
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 检查并加载 pseudobulk DEG 所需包；DESeq2 为可选方法。
+# Check and load the packages required for pseudobulk DEG analysis; DESeq2 is an optional method.
 check_packages(c("Seurat", "SeuratObject", "Matrix", "edgeR", "dplyr", "ggplot2", "here"))
 
 library(Seurat)
@@ -51,13 +51,13 @@ fig_dir <- ensure_dir(file.path(paths$fig_dir, "05_Pseudobulk_DEG"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "05_Pseudobulk_DEG"))
 
 run_deseq2 <- requireNamespace("DESeq2", quietly = TRUE)
-# 最低细胞数、DEG 阈值与目标细胞类型清单统一由 config/pipeline_params.R 定义。
+# Minimum cell count, DEG thresholds, and target cell type lists are all defined in config/pipeline_params.R.
 ```
 
 ## Load annotated tissue objects
 
 ```{r load}
-# 读取最终注释对象，并切换到 RNA assay 以使用原始计数做 pseudobulk。
+# Load the final annotated objects and switch to the RNA assay to use raw counts for pseudobulk.
 sc_spleen <- readRDS(file.path(paths$rds_dir, "01_spleen_annotated.rds"))
 sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 sc_spleen$Group <- normalize_group_levels(sc_spleen$Group)
@@ -70,13 +70,13 @@ DefaultAssay(sc_bm) <- "RNA"
 ## Target cell types
 
 ```{r targets}
-# 目标细胞类型清单（target_spleen / target_bm）由 config/pipeline_params.R 定义。
+# Target cell type lists (target_spleen / target_bm) are defined in config/pipeline_params.R.
 ```
 
 ## Pseudobulk DEG functions
 
 ```{r functions}
-# 对单个组织内的单个细胞类型进行 pseudobulk 聚合和差异分析。
+# Perform pseudobulk aggregation and differential expression analysis for a single cell type within one tissue.
 run_one_celltype <- function(obj, tissue, celltype) {
   if (!celltype %in% unique(obj$CellType_Fine)) {
     message("Skipping missing cell type: ", tissue, " / ", celltype)
@@ -93,10 +93,10 @@ run_one_celltype <- function(obj, tissue, celltype) {
     return(NULL)
   }
 
-# safe_name 用于生成不含特殊字符的输出文件名前缀。
+# safe_name is used to build an output file name prefix free of special characters.
   safe_name <- paste(sanitize_label(tissue), sanitize_label(celltype), sep = "_")
 
-# edgeR QL F-test 是默认 pseudobulk DEG 方法。
+# The edgeR QL F-test is the default pseudobulk DEG method.
   edge_res <- run_edgeR_pseudobulk(pb)
   edge_res$Tissue <- tissue
   edge_res$CellType <- celltype
@@ -111,7 +111,7 @@ run_one_celltype <- function(obj, tissue, celltype) {
   )
   save_pub_plot(p_volcano, paste0("05_", safe_name, "_edgeR_volcano"), fig_dir, width = 6, height = 5)
 
-# 如果环境中安装了 DESeq2，则额外运行 DESeq2 作为补充结果。
+# If DESeq2 is installed in the environment, run it as an additional complementary result.
   deseq_res <- NULL
   if (isTRUE(run_deseq2)) {
     deseq_res <- tryCatch(run_deseq2_pseudobulk(pb), error = function(e) {
@@ -128,7 +128,7 @@ run_one_celltype <- function(obj, tissue, celltype) {
 
   saveRDS(pb, file.path(paths$rds_dir, paste0("05_", safe_name, "_pseudobulk_counts.rds")))
 
-# 返回 pseudobulk 计数和各方法 DEG 结果，供后续富集分析使用。
+# Return the pseudobulk counts and per-method DEG results for downstream enrichment analysis.
   list(
     pseudobulk = pb,
     edgeR = edge_res,
@@ -136,7 +136,7 @@ run_one_celltype <- function(obj, tissue, celltype) {
   )
 }
 
-# 对一个组织的多个目标细胞类型批量运行 DEG。
+# Run DEG analysis in batch for multiple target cell types within one tissue.
 run_tissue <- function(obj, tissue, targets) {
   out <- lapply(targets, function(celltype) run_one_celltype(obj, tissue, celltype))
   names(out) <- targets
@@ -147,7 +147,7 @@ run_tissue <- function(obj, tissue, targets) {
 ## Run pseudobulk DEG
 
 ```{r run_deg}
-# 分别对脾脏和骨髓目标细胞类型运行 pseudobulk DEG。
+# Run pseudobulk DEG for the spleen and bone marrow target cell types separately.
 deg_results <- list(
   Spleen = run_tissue(sc_spleen, "Spleen", target_spleen),
   BoneMarrow = run_tissue(sc_bm, "BoneMarrow", target_bm)
@@ -159,7 +159,7 @@ saveRDS(deg_results, file.path(paths$rds_dir, "05_pseudobulk_deg_results.rds"))
 ## DEG summary table
 
 ```{r summary_table}
-# 汇总每个组织、细胞类型和方法的显著 DEG 数量。
+# Summarize the number of significant DEGs per tissue, cell type, and method.
 summarise_deg <- function(res_list, tissue_name) {
   bind_rows(lapply(names(res_list), function(celltype) {
     methods <- c("edgeR", "DESeq2")
@@ -184,7 +184,7 @@ deg_summary <- bind_rows(
   summarise_deg(deg_results$BoneMarrow, "BoneMarrow")
 )
 
-# 保存 DEG 汇总表，便于快速查看哪些细胞类型有显著差异。
+# Save the DEG summary table for a quick view of which cell types show significant differences.
 write.csv(deg_summary, file.path(table_dir, "05_pseudobulk_deg_summary.csv"), row.names = FALSE)
 deg_summary
 ```

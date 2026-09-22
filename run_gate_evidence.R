@@ -1,17 +1,20 @@
-# run_gate_evidence.R — 手动注释 gate 的证据生成（常驻脚本，入版本控制）。
+# run_gate_evidence.R — Evidence generation for the manual-annotation gates (persistent script, under version control).
 #
-# 用法（从 /home/abagofmilk/scDATA 执行）：
-#   Rscript snRNAseq_publication_pipeline/run_gate_evidence.R                # 处理全部待决 gate（存在 gate_status_*.csv 的）
-#   Rscript snRNAseq_publication_pipeline/run_gate_evidence.R 01_bcell       # 只处理指定 gate（可多个）
-#   Rscript snRNAseq_publication_pipeline/run_gate_evidence.R --save-rds     # 额外保存 compartment/main RDS 供追加证据
+# Usage (run from /home/abagofmilk/scDATA):
+#   Rscript snRNAseq_publication_pipeline/run_gate_evidence.R                # process all pending gates (those with a gate_status_*.csv)
+#   Rscript snRNAseq_publication_pipeline/run_gate_evidence.R 01_bcell       # process only the specified gate(s) (multiple allowed)
+#   Rscript snRNAseq_publication_pipeline/run_gate_evidence.R --save-rds     # additionally save compartment/main RDS for follow-up evidence
 #
-# 与 01/02 Rmd 共用 R/gate_cluster_helpers.R 的同一组函数、同一 set.seed(seed)
-# 锚点与同一并行设置，保证证据中的 cluster 编号与正式 render 一致（替代
-# 2026-08-03 之前 agent_scratch 里的手写镜像脚本，消除编号漂移的结构性来源）。
-# 为保持 RNG 序列一致：同一组织内、登记表顺序在所求 gate 之前的 compartment
-# 也会按序重算（但不导出证据）。
-# 产物：outputs/gate_evidence/<gate_id>/（07 只汇总 outputs/tables 与
-# outputs/figures，本目录不会被 publication 流程收编）。
+# Shares the same set of functions from R/gate_cluster_helpers.R, the same
+# set.seed(seed) anchor, and the same parallel settings as the 01/02 Rmds,
+# ensuring cluster numbering in the evidence matches the official render
+# (replaces the handwritten mirror scripts in agent_scratch from before
+# 2026-08-03, eliminating a structural source of numbering drift).
+# To keep the RNG sequence identical: within a tissue, compartments that
+# precede the requested gate in registry order are also recomputed in order
+# (without exporting evidence).
+# Outputs: outputs/gate_evidence/<gate_id>/ (07 only aggregates outputs/tables
+# and outputs/figures; this directory is not absorbed into the publication flow).
 
 args <- commandArgs(trailingOnly = TRUE)
 save_rds <- "--save-rds" %in% args
@@ -32,7 +35,7 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 source(file.path(pipeline_root, "R", "gate_cluster_helpers.R"))
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 与 01/02 Rmd 相同的包集合与加载顺序。
+# Same package set and load order as the 01/02 Rmds.
 check_packages(c(
   "Seurat", "SeuratObject", "SingleR", "celldex", "scuttle",
   "BiocParallel", "harmony", "dplyr", "ggplot2",
@@ -50,7 +53,7 @@ library(ggplot2)
 library(patchwork)
 library(future)
 
-# 与 Rmd 同锚点：线程封顶 → set.seed(seed)（逐组织）→ plan/options。
+# Same anchors as the Rmds: thread caps → set.seed(seed) (per tissue) → plan/options.
 if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
   RhpcBLASctl::blas_set_num_threads(1)
   RhpcBLASctl::omp_set_num_threads(1)
@@ -63,7 +66,7 @@ options(future.globals.maxSize = future_globals_maxsize)
 paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 defs <- gate_definitions()
 
-# 不带参数时处理全部待决 gate（存在状态文件的）。
+# With no arguments, process all pending gates (those with a status file).
 if (length(requested) == 0) {
   status_files <- list.files(paths$gate_dir, pattern = "^gate_status_.*\\.csv$", full.names = FALSE)
   requested <- intersect(names(defs), sub("^gate_status_(.*)\\.csv$", "\\1", status_files))
@@ -85,7 +88,7 @@ stamp <- function(...) message(format(Sys.time(), "[%H:%M:%S] "), ...)
 
 tissues <- unique(vapply(defs[requested], `[[`, "", "tissue"))
 for (ti in tissues) {
-  # 该组织在登记表中的 gate 顺序；跑到所求 gate 的最后一个为止（保证 RNG 序列一致）。
+  # Gate order for this tissue in the registry; run up to the last requested gate (keeps the RNG sequence identical).
   tissue_gates <- names(defs)[vapply(defs, `[[`, "", "tissue") == ti]
   requested_here <- intersect(tissue_gates, requested)
   run_seq <- tissue_gates[seq_len(max(match(requested_here, tissue_gates)))]
@@ -137,7 +140,7 @@ for (ti in tissues) {
         out_dir = out_dir,
         save_rds = save_rds
       )
-      # 与 render 时 gate 触发同规则刷新注释模板，方便与证据同目录对照。
+      # Refresh the annotation template under the same rules as the gate trigger at render time, for side-by-side comparison with the evidence in the same directory.
       write_annotation_template(
         compartment,
         map_path = file.path(paths$map_dir, def$map_file),

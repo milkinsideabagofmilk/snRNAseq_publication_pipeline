@@ -10,9 +10,9 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 设置报告运行环境，并加载流程共用函数。
+# Set up the report runtime environment and load shared pipeline functions.
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or the working directory (compatible with both render and interactive runs; does not rely on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -34,10 +34,10 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ## Configuration
 
 ```{r libraries}
-# 从集中参数文件读取 marker panel。
+# Read the marker panels from the centralized parameter file.
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 检查并加载 marker 验证和绘图所需包。
+# Check and load the packages required for marker validation and plotting.
 check_packages(c("Seurat", "SeuratObject", "Matrix", "dplyr", "tidyr", "ggplot2", "patchwork", "here"))
 
 library(Seurat)
@@ -54,7 +54,7 @@ table_dir <- ensure_dir(file.path(paths$table_dir, "03_Manual_Marker_Validation"
 ## Load annotated tissue objects
 
 ```{r load}
-# 读取 01/02 步骤输出的最终注释对象。
+# Read the final annotated objects output by steps 01/02.
 sc_spleen <- readRDS(file.path(paths$rds_dir, "01_spleen_annotated.rds"))
 sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 ```
@@ -62,14 +62,14 @@ sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 ## Marker panels
 
 ```{r marker_panels}
-# 脾脏和骨髓的复核 marker panel 统一由 config/pipeline_params.R 定义
-# （spleen_validation_markers / bm_validation_markers）。
+# The review marker panels for spleen and bone marrow are defined centrally in
+# config/pipeline_params.R (spleen_validation_markers / bm_validation_markers).
 ```
 
 ## Spleen validation
 
 ```{r spleen_validation, fig.width=13, fig.height=8}
-# 按最终 CellType_Fine 分组验证脾脏 marker 表达。
+# Validate spleen marker expression grouped by the final CellType_Fine labels.
 p_spleen_dot <- make_marker_dotplot(
   sc_spleen,
   spleen_validation_markers,
@@ -82,7 +82,7 @@ save_pub_plot(p_spleen_dot, "03_spleen_fine_label_marker_dotplot", fig_dir, widt
 spleen_validation <- marker_validation_table(sc_spleen, spleen_validation_markers, group_col = "CellType_Fine")
 write.csv(spleen_validation, file.path(table_dir, "03_spleen_marker_validation_by_fine_label.csv"), row.names = FALSE)
 
-# 输出每只 mouse 的脾脏 fine label 细胞数。
+# Output the spleen fine-label cell counts for each mouse.
 spleen_label_counts <- sc_spleen@meta.data |>
   count(Group, MouseID, CellType_Fine, name = "Cells")
 write.csv(spleen_label_counts, file.path(table_dir, "03_spleen_fine_label_counts_by_mouse.csv"), row.names = FALSE)
@@ -91,7 +91,7 @@ write.csv(spleen_label_counts, file.path(table_dir, "03_spleen_fine_label_counts
 ## Bone marrow validation
 
 ```{r bm_validation, fig.width=13, fig.height=8}
-# 按最终 CellType_Fine 分组验证骨髓 marker 表达。
+# Validate bone marrow marker expression grouped by the final CellType_Fine labels.
 p_bm_dot <- make_marker_dotplot(
   sc_bm,
   bm_validation_markers,
@@ -104,7 +104,7 @@ save_pub_plot(p_bm_dot, "03_bm_fine_label_marker_dotplot", fig_dir, width = 13, 
 bm_validation <- marker_validation_table(sc_bm, bm_validation_markers, group_col = "CellType_Fine")
 write.csv(bm_validation, file.path(table_dir, "03_bm_marker_validation_by_fine_label.csv"), row.names = FALSE)
 
-# 输出每只 mouse 的骨髓 fine label 细胞数。
+# Output the bone marrow fine-label cell counts for each mouse.
 bm_label_counts <- sc_bm@meta.data |>
   count(Group, MouseID, CellType_Fine, name = "Cells")
 write.csv(bm_label_counts, file.path(table_dir, "03_bm_fine_label_counts_by_mouse.csv"), row.names = FALSE)
@@ -113,7 +113,7 @@ write.csv(bm_label_counts, file.path(table_dir, "03_bm_fine_label_counts_by_mous
 ## Manual review sheets
 
 ```{r review_sheets}
-# 收集所有手动注释 map，生成一个便于人工复核的汇总表。
+# Collect all manual annotation maps and generate a summary sheet for manual review.
 map_files <- c(
   Spleen_B_cells = file.path(paths$map_dir, "spleen_bcell_manual_map.csv"),
   Spleen_T_cells = file.path(paths$map_dir, "spleen_tcell_manual_map.csv"),

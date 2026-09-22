@@ -1,15 +1,17 @@
-# gate_cluster_helpers.R — 01/02 聚类注释与 gate 证据共用的代码路径。
+# gate_cluster_helpers.R — code path shared by the 01/02 clustering annotation and gate evidence.
 #
-# 目的：消灭"证据脚本镜像 Rmd"造成的 cluster 编号漂移。01/02 Rmd 与
-# run_gate_evidence.R 必须调用这里定义的同一组函数（相同的调用序列 +
-# 相同的 set.seed(seed) 锚点），聚类编号才能严格一致。
-# 注释表校验本身（validate_annotation_map / check_annotation_gate）在
-# pipeline_helpers.R；本文件只放聚类路径与证据导出。
+# Purpose: eliminate cluster-number drift caused by "evidence scripts mirroring the Rmd".
+# The 01/02 Rmd and run_gate_evidence.R must call the same set of functions defined here
+# (same call sequence + same set.seed(seed) anchors) for cluster numbering to match exactly.
+# Annotation-map validation itself (validate_annotation_map / check_annotation_gate) lives
+# in pipeline_helpers.R; this file holds only the clustering path and evidence export.
 
-# 手动注释 gate 登记表：每个 gate 的组织来源、lineage 筛选正则、map 文件。
-# 正则与 lineage 名称是"镜像敏感"信息（改一处必须处处一致），唯一定义在这里；
-# resolution / marker panel 仍由 config/pipeline_params.R 唯一定义，本表不重复。
-# 调用前须已 source config/pipeline_params.R（表内不引用 config 变量，仅约定）。
+# Registry of manual-annotation gates: tissue of origin, lineage filter regex, and map file
+# for each gate. The regexes and lineage names are "mirror-sensitive" information (change one
+# place and it must change everywhere); their single definition lives here. resolution and
+# marker panel remain solely defined in config/pipeline_params.R and are not duplicated here.
+# config/pipeline_params.R must already be sourced before calling (the table itself references
+# no config variables; this is a convention only).
 gate_definitions <- function() {
   list(
     "01_bcell" = list(
@@ -42,8 +44,9 @@ gate_definitions <- function() {
   )
 }
 
-# 主聚类 + SingleR 主注释：01/02 主流程与证据脚本共用的第一段。
-# 依次执行 SCTransform 嵌入、SingleR（ImmGen）、并以 CellType_Main 初始化 CellType_Fine。
+# Main clustering + SingleR main annotation: the first stage shared by the 01/02 main
+# pipeline and the evidence script.
+# Runs SCTransform embedding, SingleR (ImmGen), then initializes CellType_Fine from CellType_Main.
 run_main_clustering_annotation <- function(obj, ref, dims, resolution, harmony_batch_var, workers) {
   obj <- run_sctransform_embedding(
     obj,
@@ -56,8 +59,10 @@ run_main_clustering_annotation <- function(obj, ref, dims, resolution, harmony_b
   obj
 }
 
-# 按 lineage 标签正则切出 compartment 并重聚类：01/02 与证据脚本共用。
-# 筛选同时参考 SingleR 原始标签与多数投票主标签；细胞数低于 min_cells 时停止。
+# Subset the compartment by lineage-label regex and re-cluster it: shared by 01/02 and the
+# evidence script.
+# Filtering considers both the raw SingleR labels and the majority-vote main labels; stops
+# when the cell count falls below min_cells.
 prepare_lineage_compartment <- function(
     obj,
     label_pattern,
@@ -89,10 +94,10 @@ prepare_lineage_compartment <- function(
   compartment
 }
 
-# 导出单个 gate 的注释证据：逐 cluster 细胞数、SingleR/主注释组成、
-# config marker panel 表达、FindAllMarkers top 基因和 marker dotplot。
-# 产物落在 outputs/gate_evidence/<gate_id>/（07 只汇总 outputs/tables 与
-# outputs/figures，本目录不会被 publication 流程收编）。
+# Export annotation evidence for a single gate: per-cluster cell counts, SingleR/main-annotation
+# composition, config marker-panel expression, FindAllMarkers top genes, and a marker dotplot.
+# Outputs land in outputs/gate_evidence/<gate_id>/ (step 07 only collects outputs/tables and
+# outputs/figures; this directory is not folded into the publication pipeline).
 dump_gate_evidence <- function(obj, gate_id, panel, out_dir, top_n = 8L, save_rds = FALSE) {
   ensure_dir(out_dir)
   cl <- as.character(obj$seurat_clusters)

@@ -1,15 +1,18 @@
-# step00_qc_helpers.R — 00_data_loading_soupx_qc.Rmd 的专用函数库。
+# step00_qc_helpers.R — dedicated function library for 00_data_loading_soupx_qc.Rmd.
 #
-# 本文件只被 00 脚本 source()，收纳其重型逻辑：输入校验、单样本处理
-# （scDblFinder + SoupX + QC）、细胞级审计、QC 表/图构建、合并校验。
-# 全流程共用的函数在 R/pipeline_helpers.R；关键参数在 config/pipeline_params.R。
+# This file is source()d only by the 00 script and hosts its heavy logic: input
+# validation, per-sample processing (scDblFinder + SoupX + QC), cell-level
+# auditing, QC table/figure construction, and merge validation.
+# Pipeline-wide shared functions live in R/pipeline_helpers.R; key parameters
+# live in config/pipeline_params.R.
 
 # ============================================================================
-# 输入校验
+# Input validation
 # ============================================================================
 
-# 硬校验样本 manifest：实验设计（2 组 × 2 组织 × 3 重复）、必填字段、
-# doublet/rho 覆盖值范围、输入矩阵目录与 10X 三件套完整性。任何不满足即停止。
+# Hard-validate the sample manifest: experimental design (2 groups x 2 tissues
+# x 3 replicates), required fields, doublet/rho override ranges, input matrix
+# directories, and 10X triplet completeness. Stop immediately on any failure.
 validate_manifest <- function(manifest) {
   required_columns <- c(
     "SampleID", "MouseID", "MouseNumber", "Group", "Tissue",
@@ -113,10 +116,11 @@ validate_manifest <- function(manifest) {
 }
 
 # ============================================================================
-# 单样本处理（scDblFinder + SoupX + QC）
+# Per-sample processing (scDblFinder + SoupX + QC)
 # ============================================================================
 
-# 计算 filtered 矩阵的基础 QC 指标（UMI 数、基因数、线粒体比例），保留原始 barcode。
+# Compute basic QC metrics for the filtered matrix (UMI counts, feature counts,
+# mitochondrial percentage), retaining the original barcodes.
 matrix_qc <- function(counts, raw_barcodes = colnames(counts)) {
   if (length(raw_barcodes) != ncol(counts)) {
     stop("raw_barcodes must contain one value per matrix column.", call. = FALSE)
@@ -142,7 +146,8 @@ matrix_qc <- function(counts, raw_barcodes = colnames(counts)) {
   out
 }
 
-# 把逐细胞 QC 失败标记折叠为分号连接的原因字符串；全部通过记为 "pass"。
+# Collapse per-cell QC failure flags into a semicolon-separated reason string;
+# cells passing all checks are recorded as "pass".
 collapse_qc_reasons <- function(flags) {
   apply(flags, 1L, function(x) {
     failed <- sub("^fail_", "", colnames(flags)[as.logical(x)])
@@ -150,11 +155,15 @@ collapse_qc_reasons <- function(flags) {
   })
 }
 
-# 处理单个样本的完整流程：
-#   读取 raw/filter 矩阵 → 完整性检查 → 轻预过滤 → scDblFinder（原始整数计数）
-#   → SoupX（复用 scDblFinder cluster，autoEstCont 或手动 rho）→ 校验校正矩阵
-#   → 建 Seurat 对象并写入全部审计元数据 → 组织特异 QC 打标 → 按 QC 过滤。
-# 返回过滤后对象、样本级 summary、raw QC 表和最终过滤前的完整元数据。
+# Full processing pipeline for a single sample:
+#   read raw/filtered matrices -> integrity checks -> light pre-filtering
+#   -> scDblFinder (original integer counts)
+#   -> SoupX (reusing scDblFinder clusters; autoEstCont or manual rho)
+#   -> validate the corrected matrix
+#   -> build the Seurat object and write all audit metadata
+#   -> apply tissue-specific QC flags -> filter by QC.
+# Returns the filtered object, a sample-level summary, the raw QC table, and
+# the complete metadata from just before the final filtering.
 process_one_sample <- function(
     sample_row,
     sample_seed,
@@ -334,8 +343,9 @@ process_one_sample <- function(
       SoupX::autoEstCont(
         soup_channel,
         doPlot = FALSE,
-        # verbose 必须为 FALSE：multisession worker 的 message 需经 socket 中继回
-        # 主进程，多 worker 交叉输出会造成中继死锁（2026-08-03 排查确认）。
+        # verbose must remain FALSE: messages from multisession workers must be
+        # relayed back to the main process over a socket, and interleaved output
+        # from multiple workers deadlocks that relay (confirmed 2026-08-03).
         verbose = FALSE
       ),
       error = function(e) {
@@ -541,21 +551,27 @@ process_one_sample <- function(
 }
 
 # ============================================================================
-# 汇总与审计
+# Summary and auditing
 # ============================================================================
 
-# 设置外层样本级并行，workers 取 n_workers 与可用核数的较小值。
-# backend 由 config/pipeline_params.R 的 parallel_backend 决定：
-#   "multicore"    —— fork（Linux/macOS 推荐；与 01/02/08 的后端一致）
-#   "multisession" —— socket 集群（当前 WSL2 环境下对长任务收集结果会挂死，
-#                    2026-08-03 以 base R parallel::makeCluster("PSOCK") 复现确认，勿用）
-#   "sequential"   —— 串行
-# fork 不可用（典型场景：RStudio Console/Knit；R Core 与 parallelly 均不建议在
-# GUI 前端 fork）时回退 sequential 并告警——绝不回退 multisession。2026-08-03 核实：
-# 旧实现在此静默落入 multisession（本主机已知挂死后端）；且 future.fork.enable
-# 必须在 supportsMulticore() 检查之前设置才有效，与其依赖该选项在 RStudio 强行
-# fork，不如回退串行并提示改用 headless Rscript。plan 启动失败同样回退串行。
-# 返回实际 workers 数和生效的 backend 名称。
+# Set up outer sample-level parallelism; workers are the smaller of n_workers
+# and the available cores.
+# The backend is chosen by parallel_backend in config/pipeline_params.R:
+#   "multicore"    -- fork (recommended on Linux/macOS; same backend as 01/02/08)
+#   "multisession" -- socket cluster (hangs while collecting results of long
+#                     tasks under the current WSL2 environment; reproduced and
+#                     confirmed 2026-08-03 with base R parallel::makeCluster("PSOCK");
+#                     do not use)
+#   "sequential"   -- serial
+# When fork is unavailable (typical scenario: RStudio Console/Knit; neither
+# R Core nor parallelly recommends forking under a GUI front end), fall back to
+# sequential with a warning -- never fall back to multisession. Verified
+# 2026-08-03: the old implementation silently landed on multisession here (a
+# known-hanging backend on this host); moreover, future.fork.enable must be set
+# before the supportsMulticore() check to take effect, so rather than relying on
+# that option to force forking inside RStudio, we fall back to serial and advise
+# re-running via headless Rscript. A failed plan startup likewise falls back to
+# sequential. Returns the actual number of workers and the active backend name.
 setup_sample_parallel <- function(n_workers, backend = "multicore") {
   available_workers <- max(1L, as.integer(future::availableCores()[[1]]))
   requested_workers <- min(as.integer(n_workers), available_workers)
@@ -601,8 +617,9 @@ setup_sample_parallel <- function(n_workers, backend = "multicore") {
   list(workers = workers, backend = active_backend)
 }
 
-# 合并 raw 阶段与 SoupX 后阶段的元数据，得到逐细胞 QC 审计表：
-# 未过预过滤的细胞标记为 pre_qc_low_coverage，缺失标记统一回填。
+# Merge the raw-stage and post-SoupX-stage metadata into a per-cell QC audit
+# table: cells that failed pre-filtering are marked pre_qc_low_coverage, and
+# missing flags are backfilled consistently.
 build_cell_qc_audit <- function(raw_qc_metadata, qc_metadata_before_final, remove_doublets) {
   audit_after_pre_qc <- dplyr::select(
     qc_metadata_before_final,
@@ -640,7 +657,7 @@ build_cell_qc_audit <- function(raw_qc_metadata, qc_metadata_before_final, remov
   cell_qc_audit
 }
 
-# 把 QC 阈值列表转成可写表的 data.frame。
+# Convert the QC threshold list into a writable data.frame.
 thresholds_to_data_frame <- function(thresholds, tissue) {
   data.frame(
     Tissue = tissue,
@@ -653,8 +670,9 @@ thresholds_to_data_frame <- function(thresholds, tissue) {
   )
 }
 
-# 写出本步骤全部 QC 表：样本级 summary、逐细胞审计（csv.gz）、SoupX/doublet
-# 专项表、分阶段细胞数、QC 阈值和失败原因统计。
+# Write out all QC tables for this step: sample-level summary, per-cell audit
+# (csv.gz), SoupX/doublet dedicated tables, per-stage cell counts, QC
+# thresholds, and failure-reason tallies.
 write_qc_tables <- function(sample_summary, cell_qc_audit, qc_thresholds, table_dir) {
   write.csv(
     sample_summary,
@@ -766,10 +784,11 @@ write_qc_tables <- function(sample_summary, cell_qc_audit, qc_thresholds, table_
 }
 
 # ============================================================================
-# QC 图
+# QC figures
 # ============================================================================
 
-# 按样本绘制 QC 指标小提琴图（nCount / nFeature / percent.mt 三个 facet）。
+# Per-sample violin plots of QC metrics (three facets: nCount / nFeature /
+# percent.mt).
 plot_qc_metrics <- function(
     meta,
     count_col,
@@ -810,9 +829,10 @@ plot_qc_metrics <- function(
     )
 }
 
-# 构建本步骤全部 QC 图，返回命名列表：
-# raw_qc（校正前小提琴）、final_qc（校正后小提琴）、raw_scatter（UMI vs 基因数散点）、
-# doublet_scores（scDblFinder 分数分布）、method_summary（rho 与 doublet 率柱状图）。
+# Build all QC figures for this step and return them as a named list:
+# raw_qc (pre-correction violins), final_qc (post-correction violins),
+# raw_scatter (UMI vs feature-count scatter), doublet_scores (scDblFinder score
+# distributions), method_summary (rho and doublet-rate bar charts).
 build_qc_figures <- function(raw_qc_metadata, final_metadata, qc_metadata_before_final, sample_summary) {
   p_raw_qc <- plot_qc_metrics(
     raw_qc_metadata,
@@ -915,10 +935,10 @@ build_qc_figures <- function(raw_qc_metadata, final_metadata, qc_metadata_before
 }
 
 # ============================================================================
-# 合并与校验
+# Merge and validation
 # ============================================================================
 
-# 合并同组织的样本对象；只有一个样本时直接返回。
+# Merge sample objects of the same tissue; a single sample is returned as is.
 merge_sample_objects <- function(objects, project) {
   if (length(objects) == 0L) {
     stop("No objects supplied for ", project, ".", call. = FALSE)
@@ -934,8 +954,10 @@ merge_sample_objects <- function(objects, project) {
   }
 }
 
-# 校验合并后的组织对象：关键元数据齐全、细胞 ID 唯一且为 SampleID_RawBarcode 格式、
-# 无缺失值、全部通过最终 QC、包含 RNA assay、样本集合和细胞总数与预期一致。
+# Validate the merged tissue object: critical metadata present, cell IDs unique
+# and in SampleID_RawBarcode format, no missing values, all cells passing final
+# QC, RNA assay present, and the sample set and total cell count matching
+# expectations.
 validate_merged_object <- function(obj, expected_samples, expected_cells, tissue) {
   required_metadata <- c(
     "SampleID", "MouseID", "Group", "Tissue", "RawBarcode",

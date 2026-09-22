@@ -10,9 +10,10 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 设置报告运行环境，并加载流程共用函数。
+# Set up the report runtime environment and load functions shared across the pipeline.
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or the working directory
+# (compatible with both render and interactive runs; does not rely on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -29,17 +30,17 @@ if (is.na(pipeline_root)) {
 }
 knitr::opts_knit$set(root.dir = pipeline_root)
 source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
-# gate 聚类路径与 run_gate_evidence.R 共用（gate_definitions / 共享聚类函数）。
+# The gate clustering path is shared with run_gate_evidence.R (gate_definitions / shared clustering functions).
 source(file.path(pipeline_root, "R", "gate_cluster_helpers.R"))
 ```
 
 ## Configuration
 
 ```{r libraries}
-# 从集中参数文件读取聚类、注释和 marker panel 参数。
+# Read clustering, annotation, and marker panel parameters from the central parameter file.
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 检查并加载脾脏聚类、SingleR 注释和绘图所需包。
+# Check and load the packages required for spleen clustering, SingleR annotation, and plotting.
 check_packages(c(
   "Seurat", "SeuratObject", "SingleR", "celldex", "scuttle",
   "BiocParallel", "harmony", "dplyr", "ggplot2",
@@ -62,7 +63,8 @@ if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
   RhpcBLASctl::omp_set_num_threads(1)
 }
 
-# 固定随机种子，保证聚类编号可复现（agent 注释 gate 的证据脚本依赖此一致性）。
+# Fix the random seed so that cluster numbering is reproducible (the gate evidence
+# scripts used for annotation rely on this consistency).
 set.seed(seed)
 
 # Seurat uses the future backend in expensive steps such as SCTransform.
@@ -73,16 +75,18 @@ options(future.globals.maxSize = future_globals_maxsize)
 paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "01_Spleen_Annotation"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "01_Spleen_Annotation"))
-# 本脚本两个 gate（B/T 系）的登记表：lineage 正则与 map 文件以 gate_definitions 为准。
+# Registry of the two gates (B/T lineages) in this script: lineage regexes and map
+# files are taken from gate_definitions.
 gate_defs <- gate_definitions()
 
-# 聚类维度、分辨率、Harmony 设置与 marker panel 统一由 config/pipeline_params.R 定义。
+# Clustering dimensions, resolutions, Harmony settings, and marker panels are all
+# defined centrally in config/pipeline_params.R.
 ```
 
 ## Load spleen object
 
 ```{r load}
-# 读取 00 步骤输出的脾脏 QC 后对象。
+# Read the post-QC spleen object produced by step 00.
 sc_spleen <- readRDS(file.path(paths$rds_dir, "00_spleen_qc.rds"))
 sc_spleen$Group <- normalize_group_levels(sc_spleen$Group)
 message("Spleen cells after QC: ", ncol(sc_spleen))
@@ -91,8 +95,9 @@ message("Spleen cells after QC: ", ncol(sc_spleen))
 ## Main clustering without sample-level Harmony
 
 ```{r main_clustering}
-# 主聚类 + SingleR 主注释走 gate_cluster_helpers.R 的共享函数，
-# 与 run_gate_evidence.R 严格同一路径（cluster 编号一致的前提）。
+# Main clustering + SingleR main annotation go through the shared functions in
+# gate_cluster_helpers.R, exactly the same path as run_gate_evidence.R (a
+# prerequisite for consistent cluster numbering).
 ref_immgen <- celldex::ImmGenData()
 sc_spleen <- run_main_clustering_annotation(
   sc_spleen,
@@ -106,14 +111,15 @@ sc_spleen <- run_main_clustering_annotation(
 p_clusters <- DimPlot(sc_spleen, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.2) +
   labs(title = "Spleen clusters")
 print(p_clusters)
-# 保存主聚类 UMAP，供后续检查聚类结构。
+# Save the main clustering UMAP for later inspection of the cluster structure.
 save_pub_plot(p_clusters, "01_spleen_umap_clusters", fig_dir, width = 10, height = 5)
 ```
 
 ## SingleR main annotation
 
 ```{r singler}
-# SingleR 主类别注释结果可视化（注释计算已在上一步共享函数内完成）。
+# Visualize the SingleR main-category annotation results (the annotation itself was
+# already computed inside the shared function in the previous step).
 p_main <- DimPlot(sc_spleen, reduction = "umap", group.by = "CellType_Main", split.by = "Group", pt.size = 0.2) +
   labs(title = "Spleen main annotation")
 print(p_main)
@@ -121,15 +127,17 @@ save_pub_plot(p_main, "01_spleen_umap_main_annotation", fig_dir, width = 11, hei
 
 main_table <- sc_spleen@meta.data |>
   dplyr::count(Group, MouseID, CellType_Main, name = "Cells")
-# 输出主类别在每只 mouse 中的细胞数。
+# Output the cell counts of each main category in every mouse.
 write.csv(main_table, file.path(table_dir, "01_spleen_main_annotation_counts.csv"), row.names = FALSE)
 ```
 
 ## Refine B-cell compartment
 
 ```{r bcell_refinement}
-# 根据 SingleR/主注释筛选 B 细胞相关标签，进入 B-cell compartment 精细聚类。
-# 筛选正则与 lineage 名取自 gate_definitions（与证据脚本同一定义处）。
+# Filter B-cell-related labels based on the SingleR/main annotation, then proceed to
+# fine clustering of the B-cell compartment.
+# The filter regex and lineage name come from gate_definitions (the same definition
+# source as the evidence scripts).
 b_cells <- prepare_lineage_compartment(
   sc_spleen,
   label_pattern = gate_defs[["01_bcell"]]$label_pattern,
@@ -142,7 +150,8 @@ b_cells <- prepare_lineage_compartment(
 
 b_map_path <- file.path(paths$map_dir, gate_defs[["01_bcell"]]$map_file)
 b_template_path <- file.path(table_dir, "01_spleen_bcell_annotation_template_current_clusters.csv")
-# 写模板并校验手动注释表；未覆盖时写 gate 状态文件并以 GATE[01_bcell] 前缀停止。
+# Write the template and validate the manual annotation table; if any cluster is not
+# covered, write a gate status file and stop with the GATE[01_bcell] prefix.
 b_map_check <- check_annotation_gate(
   b_cells, b_map_path,
   gate_id = "01_bcell",
@@ -151,7 +160,8 @@ b_map_check <- check_annotation_gate(
 )
 b_cells <- apply_manual_annotation(b_cells, b_map_check$map, unknown_label = "Unknown spleen B cluster")
 
-# B 细胞 marker panel 由 config/pipeline_params.R 提供，用于验证手动 fine label。
+# The B-cell marker panel is provided by config/pipeline_params.R and is used to
+# validate the manual fine labels.
 
 p_b_clusters <- DimPlot(b_cells, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.35) +
   labs(title = "Spleen B-lineage subclusters")
@@ -167,7 +177,7 @@ save_pub_plot(p_b_clusters, "01_spleen_bcell_umap_clusters", fig_dir, width = 10
 save_pub_plot(p_b_anno, "01_spleen_bcell_umap_manual_annotation", fig_dir, width = 11, height = 6)
 save_pub_plot(p_b_dot, "01_spleen_bcell_marker_dotplot", fig_dir, width = 10, height = 5)
 
-# 同时按 cluster 和最终 fine label 输出 marker 表达验证表。
+# Output marker expression validation tables by both cluster and final fine label.
 b_validation_cluster <- marker_validation_table(b_cells, spleen_b_markers, group_col = "seurat_clusters")
 b_validation_fine <- marker_validation_table(b_cells, spleen_b_markers, group_col = "CellType_Fine")
 write.csv(b_validation_cluster, file.path(table_dir, "01_spleen_bcell_marker_validation_by_cluster.csv"), row.names = FALSE)
@@ -177,8 +187,10 @@ write.csv(b_validation_fine, file.path(table_dir, "01_spleen_bcell_marker_valida
 ## Refine T-cell compartment
 
 ```{r tcell_refinement}
-# 根据 SingleR/主注释筛选 T 细胞相关标签，进入 T-cell compartment 精细聚类。
-# 筛选正则与 lineage 名取自 gate_definitions（与证据脚本同一定义处）。
+# Filter T-cell-related labels based on the SingleR/main annotation, then proceed to
+# fine clustering of the T-cell compartment.
+# The filter regex and lineage name come from gate_definitions (the same definition
+# source as the evidence scripts).
 t_cells <- prepare_lineage_compartment(
   sc_spleen,
   label_pattern = gate_defs[["01_tcell"]]$label_pattern,
@@ -191,7 +203,8 @@ t_cells <- prepare_lineage_compartment(
 
 t_map_path <- file.path(paths$map_dir, gate_defs[["01_tcell"]]$map_file)
 t_template_path <- file.path(table_dir, "01_spleen_tcell_annotation_template_current_clusters.csv")
-# 写模板并校验手动注释表；未覆盖时写 gate 状态文件并以 GATE[01_tcell] 前缀停止。
+# Write the template and validate the manual annotation table; if any cluster is not
+# covered, write a gate status file and stop with the GATE[01_tcell] prefix.
 t_map_check <- check_annotation_gate(
   t_cells, t_map_path,
   gate_id = "01_tcell",
@@ -200,7 +213,8 @@ t_map_check <- check_annotation_gate(
 )
 t_cells <- apply_manual_annotation(t_cells, t_map_check$map, unknown_label = "Unknown spleen T cluster")
 
-# T 细胞 marker panel 由 config/pipeline_params.R 提供，用于区分 naive、memory、Tfh、Treg 和 cytotoxic T 等状态。
+# The T-cell marker panel is provided by config/pipeline_params.R and is used to
+# distinguish states such as naive, memory, Tfh, Treg, and cytotoxic T cells.
 
 p_t_clusters <- DimPlot(t_cells, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.35) +
   labs(title = "Spleen T-cell subclusters")
@@ -216,7 +230,7 @@ save_pub_plot(p_t_clusters, "01_spleen_tcell_umap_clusters", fig_dir, width = 10
 save_pub_plot(p_t_anno, "01_spleen_tcell_umap_manual_annotation", fig_dir, width = 11, height = 6)
 save_pub_plot(p_t_dot, "01_spleen_tcell_marker_dotplot", fig_dir, width = 10, height = 5)
 
-# 同时按 cluster 和最终 fine label 输出 marker 表达验证表。
+# Output marker expression validation tables by both cluster and final fine label.
 t_validation_cluster <- marker_validation_table(t_cells, spleen_t_markers, group_col = "seurat_clusters")
 t_validation_fine <- marker_validation_table(t_cells, spleen_t_markers, group_col = "CellType_Fine")
 write.csv(t_validation_cluster, file.path(table_dir, "01_spleen_tcell_marker_validation_by_cluster.csv"), row.names = FALSE)
@@ -226,7 +240,7 @@ write.csv(t_validation_fine, file.path(table_dir, "01_spleen_tcell_marker_valida
 ## Merge refined labels back to spleen
 
 ```{r merge_back}
-# 将 B/T 子聚类的精细标签写回完整脾脏对象。
+# Write the fine labels from the B/T subclustering back into the full spleen object.
 sc_spleen$CellType_Fine <- sc_spleen$CellType_Main
 sc_spleen$CellType_Fine[colnames(b_cells)] <- b_cells$CellType_Fine
 sc_spleen$CellType_Fine[colnames(t_cells)] <- t_cells$CellType_Fine
@@ -238,7 +252,7 @@ save_pub_plot(p_fine, "01_spleen_umap_fine_annotation", fig_dir, width = 12, hei
 
 fine_table <- sc_spleen@meta.data |>
   dplyr::count(Group, MouseID, CellType_Fine, name = "Cells")
-# 保存最终 fine annotation 计数和后续步骤使用的 RDS 对象。
+# Save the final fine annotation counts and the RDS objects used by downstream steps.
 write.csv(fine_table, file.path(table_dir, "01_spleen_fine_annotation_counts.csv"), row.names = FALSE)
 
 saveRDS(sc_spleen, file.path(paths$rds_dir, "01_spleen_annotated.rds"))

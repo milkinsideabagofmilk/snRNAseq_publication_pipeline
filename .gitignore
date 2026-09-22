@@ -1,5 +1,5 @@
-# 只对脚本和参数做版本控制：00–08 的 Rmd、render_all.R、run_gate_evidence.R、R/ 函数库、config/ 参数文件。
-# rds、outputs 等脚本产物以及其余文件一律不跟踪；如需跟踪新文件，在此添加放行规则。
+# Version-control only scripts and parameters: the 00–08 Rmds, render_all.R, run_gate_evidence.R, the R/ helper library, and config/.
+# Script products (rds, outputs, etc.) and everything else are untracked; to track a new file, add an allow rule here.
 
 /*
 !/.gitignore

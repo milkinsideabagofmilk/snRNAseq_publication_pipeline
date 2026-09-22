@@ -10,9 +10,9 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 设置报告运行环境，并加载流程共用函数。
+# Set up the report runtime environment and load the shared pipeline functions.
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or the working directory (compatible with both render and interactive runs; does not rely on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -34,10 +34,10 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ## Configuration
 
 ```{r libraries}
-# 从集中参数文件读取富集分析设置。
+# Read enrichment analysis settings from the centralized parameter file.
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 检查并加载 GO/KEGG 富集分析和绘图所需包。
+# Check and load the packages required for GO/KEGG enrichment analysis and plotting.
 check_packages(c(
   "dplyr", "ggplot2", "clusterProfiler", "org.Mm.eg.db",
   "enrichplot", "here"
@@ -53,20 +53,20 @@ paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "06_Pseudobulk_Enrichment"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "06_Pseudobulk_Enrichment"))
 
-# DEG 方法选择、显著性阈值与富集 cutoffs 统一由 config/pipeline_params.R 定义。
+# DEG method selection, significance thresholds, and enrichment cutoffs are all defined in config/pipeline_params.R.
 ```
 
 ## Load pseudobulk DEG results
 
 ```{r load}
-# 读取 05 步骤输出的 pseudobulk DEG 结果。
+# Read the pseudobulk DEG results produced by step 05.
 deg_results <- readRDS(file.path(paths$rds_dir, "05_pseudobulk_deg_results.rds"))
 ```
 
 ## Enrichment functions
 
 ```{r functions}
-# 将基因 symbol 转换为 Entrez ID，供 clusterProfiler 富集分析使用。
+# Convert gene symbols to Entrez IDs for clusterProfiler enrichment analysis.
 symbol_to_entrez <- function(genes) {
   genes <- unique(genes[!is.na(genes)])
   if (length(genes) == 0) return(character())
@@ -79,7 +79,7 @@ symbol_to_entrez <- function(genes) {
   unique(ids$ENTREZID)
 }
 
-# 保存富集结果表和 dotplot；无显著条目时返回 NULL。
+# Save the enrichment result table and dotplot; returns NULL when there are no significant terms.
 save_enrichment <- function(enrich_obj, prefix, label) {
   if (is.null(enrich_obj) || nrow(as.data.frame(enrich_obj)) == 0) return(NULL)
 
@@ -94,7 +94,7 @@ save_enrichment <- function(enrich_obj, prefix, label) {
   p
 }
 
-# 对一个 DEG 结果分别提取上调和下调基因，并运行 GO BP 与 KEGG 富集。
+# Extract up- and down-regulated genes from a single DEG result and run GO BP and KEGG enrichment.
 run_enrichment_for_result <- function(res, tissue, celltype, method) {
   if (is.null(res) || nrow(res) == 0) return(NULL)
 
@@ -121,7 +121,7 @@ run_enrichment_for_result <- function(res, tissue, celltype, method) {
       return(NULL)
     }
 
-# GO BP 使用当前 DEG 结果中可映射基因作为 universe。
+# GO BP uses the mappable genes from the current DEG result as the universe.
     ego <- tryCatch(
       enrichGO(
         gene = entrez,
@@ -136,7 +136,7 @@ run_enrichment_for_result <- function(res, tissue, celltype, method) {
       error = function(e) NULL
     )
 
-# KEGG 使用同样的显著基因集合，并在有结果时转换为可读基因名。
+# KEGG uses the same significant gene set and converts IDs to readable gene names when results are available.
     ekegg <- tryCatch(
       enrichKEGG(
         gene = entrez,
@@ -167,7 +167,7 @@ run_enrichment_for_result <- function(res, tissue, celltype, method) {
 ## Run enrichment from pseudobulk DEG
 
 ```{r run_enrichment}
-# 遍历所有组织和细胞类型，基于指定 DEG 方法运行富集分析。
+# Iterate over all tissues and cell types, running enrichment with the specified DEG method.
 enrich_results <- list()
 
 for (tissue in names(deg_results)) {
@@ -183,14 +183,14 @@ for (tissue in names(deg_results)) {
   }
 }
 
-# 保存完整富集对象，便于后续复查或重新绘图。
+# Save the full enrichment objects for later review or re-plotting.
 saveRDS(enrich_results, file.path(paths$rds_dir, "06_pseudobulk_enrichment_results.rds"))
 ```
 
 ## Enrichment summary table
 
 ```{r summary}
-# 汇总每个组织、细胞类型和方向下的 GO/KEGG 条目数量。
+# Summarize the number of GO/KEGG terms per tissue, cell type, and direction.
 summarise_enrich <- function(enrich_results) {
   bind_rows(lapply(names(enrich_results), function(tissue) {
     bind_rows(lapply(names(enrich_results[[tissue]]), function(celltype) {
@@ -212,7 +212,7 @@ summarise_enrich <- function(enrich_results) {
 }
 
 enrich_summary <- summarise_enrich(enrich_results)
-# 保存富集分析汇总表。
+# Save the enrichment analysis summary table.
 write.csv(enrich_summary, file.path(table_dir, "06_pseudobulk_enrichment_summary.csv"), row.names = FALSE)
 enrich_summary
 ```

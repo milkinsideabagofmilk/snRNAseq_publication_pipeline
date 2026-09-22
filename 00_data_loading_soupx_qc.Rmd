@@ -10,9 +10,10 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 报告运行环境：定位 pipeline 根目录并加载公共函数库。
+# Report runtime environment: locate the pipeline root and load the shared helper libraries.
 knitr::opts_chunk$set(echo = TRUE, warning = TRUE, message = TRUE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or the working directory
+# (compatible with both rendering and interactive runs; does not rely on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -32,23 +33,28 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 source(file.path(pipeline_root, "R", "step00_qc_helpers.R"))
 ```
 
-## 流程概述
+## Pipeline overview
 
-每个样本独立处理：读取 raw/filter 矩阵 → 轻预过滤（仅去空滴）→
-scDblFinder 双联体标记（跑在 SoupX 之前的原始整数计数上，默认只标记不剔除）→
-SoupX 校正（复用 scDblFinder 的 cluster 作为 soup cluster，无需额外临时聚类）→
-组织特异 QC → 按组织合并保存。
+Each sample is processed independently: read the raw/filter matrices →
+light pre-filtering (removes only empty droplets) →
+scDblFinder doublet calling (run on the raw integer counts before SoupX; by default
+doublets are only flagged, not removed) →
+SoupX correction (reuses the scDblFinder clusters as soup clusters, so no extra
+ad hoc clustering is needed) →
+tissue-specific QC → merge by tissue and save.
 
-关键参数全部由 `config/pipeline_params.R` 提供；输入校验、单样本处理、
-审计表和 QC 图构建等重型逻辑封装在 `R/step00_qc_helpers.R`，本脚本只保留流程骨架。
+All key parameters are provided by `config/pipeline_params.R`; heavy logic such as
+input validation, per-sample processing, audit tables, and QC figure construction is
+encapsulated in `R/step00_qc_helpers.R`. This script keeps only the workflow skeleton.
 
 ## Configuration
 
 ```{r configuration}
-# 从集中参数文件读取关键参数（seed、QC 阈值、双联体率、SoupX 设置等）。
+# Read key parameters from the centralized parameter file (seed, QC thresholds,
+# doublet rate, SoupX settings, etc.).
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 本步骤所需 R 包；缺失即停止并提示安装。
+# R packages required for this step; stop with an installation hint if any is missing.
 required_packages <- c(
   "Seurat", "SeuratObject", "SoupX", "Matrix", "dplyr", "tidyr",
   "ggplot2", "future", "future.apply", "SingleCellExperiment",
@@ -56,23 +62,24 @@ required_packages <- c(
 )
 check_packages(required_packages)
 
-# BLAS/OpenMP 限 1 线程，避免与外层样本并行叠加。
+# Limit BLAS/OpenMP to 1 thread to avoid stacking with the outer per-sample parallelism.
 if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
   RhpcBLASctl::blas_set_num_threads(1)
   RhpcBLASctl::omp_set_num_threads(1)
 }
 set.seed(seed)
 
-# 外层按样本并行，后端由 config 的 parallel_backend 决定（默认 multicore/fork；
-# 本 WSL2 环境 PSOCK 挂死，勿用 multisession）；scDblFinder 在 worker 内保持串行，避免嵌套并行。
+# Parallelize across samples at the outer level; the backend is set by parallel_backend
+# in config (default multicore/fork; on this WSL2 environment PSOCK hangs, so do not use
+# multisession); scDblFinder stays serial inside each worker to avoid nested parallelism.
 parallel <- setup_sample_parallel(n_workers, parallel_backend)
 
 paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 manifest <- make_sample_manifest()
 
-# 可选 per-sample 覆盖列，NA = 自动/默认行为：
-#   ExpectedDoubletRate ∈ (0,1)，如 0.04 表示 4%；
-#   SoupXManualRho ∈ [0,1]，跳过 autoEstCont 直接使用该污染率。
+# Optional per-sample override columns; NA = automatic/default behavior:
+#   ExpectedDoubletRate in (0,1), e.g. 0.04 means 4%;
+#   SoupXManualRho in [0,1], skips autoEstCont and uses this contamination rate directly.
 manifest$ExpectedDoubletRate <- NA_real_
 manifest$SoupXManualRho <- NA_real_
 manifest$FilteredMatrixDir <- file.path(
@@ -86,10 +93,12 @@ manifest$RawMatrixDir <- file.path(
 ## Validate inputs and record run parameters
 
 ```{r validate_inputs}
-# 硬校验实验设计（2 组 × 2 组织 × 3 重复、每只 mouse 两组织）和输入矩阵完整性。
+# Hard-validate the experimental design (2 groups x 2 tissues x 3 replicates, both
+# tissues per mouse) and input matrix integrity.
 validate_manifest(manifest)
 
-# 写运行状态文件（RUNNING），渲染成功后在结尾改写为 SUCCESS。
+# Write the run status file (RUNNING); rewritten to SUCCESS at the end after a
+# successful render.
 run_started_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")
 run_status_file <- file.path(paths$table_dir, "00_RUN_STATUS.txt")
 writeLines(
@@ -106,7 +115,7 @@ write.csv(
   row.names = FALSE
 )
 
-# 记录本轮关键参数，便于审计与复现。
+# Record the key parameters of this run for auditing and reproducibility.
 run_parameters <- data.frame(
   Parameter = c(
     "seed",
@@ -149,7 +158,8 @@ run_parameters
 ## Run all samples
 
 ```{r run_all_samples}
-# 逐样本派生种子，保证可重复；finally 中恢复串行 plan，避免泄漏并行状态。
+# Derive a per-sample seed for reproducibility; restore the sequential plan in finally
+# to avoid leaking parallel state.
 sample_seeds <- seed + seq_len(nrow(manifest))
 sample_results <- tryCatch(
   future.apply::future_lapply(
@@ -169,15 +179,17 @@ sample_results <- tryCatch(
       )
     },
     future.seed = TRUE,
-    # 一样本一 future（动态调度）：默认分块会把 12 个样本静态切成
-    # 6 workers × 2 样本，无负载均衡，且同组任一样本报错会连坐丢失另一样本。
+    # One sample per future (dynamic scheduling): the default chunking would statically
+    # split the 12 samples into 6 workers x 2 samples with no load balancing, and an
+    # error in one sample would also take down the other sample in the same chunk.
     future.chunk.size = 1
   ),
   finally = future::plan(future::sequential)
 )
 names(sample_results) <- manifest$SampleID
 
-# 汇总各样本返回的四类结果：过滤后对象、样本级 summary、raw QC、最终过滤前元数据。
+# Collect the four kinds of per-sample results: filtered object, sample-level summary,
+# raw QC, and pre-final-filtering metadata.
 seurat_list <- lapply(sample_results, function(x) x$obj)
 sample_summary <- dplyr::bind_rows(
   lapply(sample_results, function(x) x$summary)
@@ -192,7 +204,7 @@ final_metadata <- dplyr::bind_rows(
   lapply(seurat_list, function(x) x[[]])
 )
 
-# 合并 raw 与 SoupX 后两阶段的元数据，得到逐细胞 QC 审计表。
+# Merge the raw and post-SoupX stage metadata into a per-cell QC audit table.
 cell_qc_audit <- build_cell_qc_audit(
   raw_qc_metadata,
   qc_metadata_before_final,
@@ -205,16 +217,17 @@ sample_summary
 ## Tables and QC audit trail
 
 ```{r write_tables}
-# 写出全部 QC 表：样本级 summary、逐细胞审计（csv.gz）、SoupX/doublet 专项表、
-# 分阶段细胞数、QC 阈值和失败原因统计。
+# Write all QC tables: sample-level summary, per-cell audit (csv.gz),
+# SoupX/doublet-specific tables, per-stage cell counts, QC thresholds, and
+# failure-reason statistics.
 write_qc_tables(sample_summary, cell_qc_audit, qc_thresholds, paths$table_dir)
 ```
 
 ## QC plots
 
 ```{r qc_plots, fig.width=14, fig.height=5}
-# 构建并展示全部 QC 图：校正前/后小提琴图、UMI-基因数散点、
-# scDblFinder 分数分布、rho 与 doublet 率柱状图。
+# Build and display all QC figures: pre-/post-correction violin plots, UMI-vs-gene-count
+# scatter, scDblFinder score distributions, and rho / doublet-rate bar plots.
 qc_figs <- build_qc_figures(
   raw_qc_metadata,
   final_metadata,
@@ -242,7 +255,8 @@ Cell IDs already carry their `SampleID` prefix, so the merge does not rely on
 Seurat's automatic duplicate-name suffixes.
 
 ```{r merge_and_save}
-# 按组织合并样本对象，并校验合并结果（元数据、细胞 ID、样本集合、细胞总数）。
+# Merge sample objects by tissue and validate the merged result (metadata, cell IDs,
+# sample set, total cell count).
 spleen_samples <- manifest$SampleID[manifest$Tissue == "Spleen"]
 bm_samples <- manifest$SampleID[manifest$Tissue == "BoneMarrow"]
 
@@ -304,7 +318,7 @@ tissue_summary
 ## Reproducibility
 
 ```{r session_info}
-# 记录 sessionInfo 并把运行状态改写为 SUCCESS。
+# Record sessionInfo and rewrite the run status to SUCCESS.
 session_info <- capture.output(sessionInfo())
 writeLines(
   session_info,

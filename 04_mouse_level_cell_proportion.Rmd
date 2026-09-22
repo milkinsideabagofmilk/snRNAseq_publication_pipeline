@@ -10,9 +10,9 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 设置报告运行环境，并加载流程共用函数。
+# Set up the report runtime environment and load shared pipeline functions.
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or the working directory (compatible with both render and interactive runs; does not rely on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -34,10 +34,10 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ## Configuration
 
 ```{r libraries}
-# 从集中参数文件读取 focus 标签列表。
+# Read the focus label lists from the centralized parameter file.
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
-# 检查并加载 mouse-level 细胞比例统计和绘图所需包。
+# Check and load the packages required for mouse-level cell proportion statistics and plotting.
 check_packages(c("Seurat", "dplyr", "tidyr", "ggplot2", "here"))
 
 library(Seurat)
@@ -53,7 +53,7 @@ table_dir <- ensure_dir(file.path(paths$table_dir, "04_Mouse_Level_Proportion"))
 ## Load annotated objects
 
 ```{r load}
-# 读取 01/02 步骤输出的最终注释对象，并统一分组命名。
+# Load the final annotated objects produced by steps 01/02 and harmonize group-level naming.
 sc_spleen <- readRDS(file.path(paths$rds_dir, "01_spleen_annotated.rds"))
 sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 sc_spleen$Group <- normalize_group_levels(sc_spleen$Group)
@@ -63,9 +63,9 @@ sc_bm$Group <- normalize_group_levels(sc_bm$Group)
 ## Plot labels
 
 ```{r plot_labels}
-# 重点展示标签列表（spleen_focus / bm_focus）由 config/pipeline_params.R 定义，
-# 列表之外的类型在图中合并为 Other cells。
-# CellType_Plot 用于简化展示，CellType_Fine 保留完整细胞类型。
+# The focus label lists (spleen_focus / bm_focus) are defined in config/pipeline_params.R;
+# cell types outside the lists are merged into "Other cells" in the figures.
+# CellType_Plot is used for simplified display, while CellType_Fine retains the full cell types.
 sc_spleen$CellType_Plot <- ifelse(sc_spleen$CellType_Fine %in% spleen_focus, sc_spleen$CellType_Fine, "Other cells")
 sc_bm$CellType_Plot <- ifelse(sc_bm$CellType_Fine %in% bm_focus, sc_bm$CellType_Fine, "Other cells")
 ```
@@ -73,7 +73,7 @@ sc_bm$CellType_Plot <- ifelse(sc_bm$CellType_Fine %in% bm_focus, sc_bm$CellType_
 ## Mouse-level proportions
 
 ```{r proportions}
-# 分别计算完整 fine label 和绘图合并标签的 mouse-level 细胞比例。
+# Compute mouse-level cell proportions separately for the full fine labels and the merged plotting labels.
 prop_spleen_full <- calc_mouse_proportions(sc_spleen, celltype_col = "CellType_Fine")
 prop_bm_full <- calc_mouse_proportions(sc_bm, celltype_col = "CellType_Fine")
 
@@ -85,7 +85,7 @@ stats_bm_full <- test_mouse_proportions(prop_bm_full)
 stats_spleen_plot <- test_mouse_proportions(prop_spleen_plot)
 stats_bm_plot <- test_mouse_proportions(prop_bm_plot)
 
-# 保存比例表和组间统计结果，后续作图和导出均使用这些表。
+# Save the proportion tables and between-group statistics; all downstream plotting and export use these tables.
 write.csv(prop_spleen_full, file.path(table_dir, "04_spleen_mouse_level_proportions_fine.csv"), row.names = FALSE)
 write.csv(prop_bm_full, file.path(table_dir, "04_bm_mouse_level_proportions_fine.csv"), row.names = FALSE)
 write.csv(prop_spleen_plot, file.path(table_dir, "04_spleen_mouse_level_proportions_plot_labels.csv"), row.names = FALSE)
@@ -99,7 +99,7 @@ write.csv(stats_bm_plot, file.path(table_dir, "04_bm_mouse_level_proportion_stat
 ## Publication figures
 
 ```{r plotting_functions}
-# 堆叠条形图展示每只 mouse 的整体细胞组成。
+# Stacked bar chart showing the overall cell composition of each mouse.
 plot_stacked <- function(prop_df, title) {
   plot_df <- prop_df |>
     mutate(CellType = factor(CellType, levels = unique(CellType[order(CellType == "Other cells", CellType)])))
@@ -114,7 +114,7 @@ plot_stacked <- function(prop_df, title) {
     theme(axis.text.x = element_text(angle = 45, hjust = 1))
 }
 
-# 箱线图加散点展示每个细胞类型在两组 mouse 间的比例分布。
+# Box plots with overlaid points showing the proportion distribution of each cell type between the two mouse groups.
 plot_mouse_dots <- function(prop_df, title) {
   ggplot(prop_df |> filter(CellType != "Other cells"), aes(x = Group, y = Percentage, color = Group)) +
     geom_boxplot(width = 0.5, outlier.shape = NA, linewidth = 0.25) +
@@ -126,7 +126,7 @@ plot_mouse_dots <- function(prop_df, title) {
     theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
 }
 
-# 横向热图展示每只 mouse 中各细胞类型的比例。
+# Heatmap showing the proportion of each cell type in every mouse.
 plot_mouse_heatmap <- function(prop_df, title) {
   plot_df <- prop_df |>
     dplyr::mutate(
@@ -149,7 +149,7 @@ plot_mouse_heatmap <- function(prop_df, title) {
 ```
 
 ```{r spleen_figures, fig.width=11, fig.height=8}
-# 生成并保存脾脏细胞比例的条形图、箱线图和热图。
+# Generate and save the bar chart, box plots, and heatmap of spleen cell proportions.
 p_spleen_stack <- plot_stacked(prop_spleen_plot, "Spleen cell composition by mouse")
 p_spleen_stats <- plot_mouse_dots(prop_spleen_plot, "Spleen cell proportions by mouse")
 p_spleen_heatmap <- plot_mouse_heatmap(prop_spleen_plot, "Spleen cell proportion heatmap by mouse")
@@ -164,7 +164,7 @@ save_pub_plot(p_spleen_heatmap, "04_spleen_mouse_level_heatmap", fig_dir, width 
 ```
 
 ```{r bm_figures, fig.width=11, fig.height=8}
-# 生成并保存骨髓细胞比例的条形图、箱线图和热图。
+# Generate and save the bar chart, box plots, and heatmap of bone marrow cell proportions.
 p_bm_stack <- plot_stacked(prop_bm_plot, "Bone marrow cell composition by mouse")
 p_bm_stats <- plot_mouse_dots(prop_bm_plot, "Bone marrow cell proportions by mouse")
 p_bm_heatmap <- plot_mouse_heatmap(prop_bm_plot, "Bone marrow cell proportion heatmap by mouse")

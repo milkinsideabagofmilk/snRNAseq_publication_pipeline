@@ -1,15 +1,15 @@
-# 常用空值兜底：x 为空或全 NA 时返回 y。
+# Common null-coalescing fallback: return y when x is NULL, length 0, or all NA.
 `%||%` <- function(x, y) {
   if (is.null(x) || length(x) == 0 || all(is.na(x))) y else x
 }
 
-# 确保输出目录存在，并返回目录路径。
+# Ensure the output directory exists and return its path.
 ensure_dir <- function(path) {
   if (!dir.exists(path)) dir.create(path, recursive = TRUE, showWarnings = FALSE)
   path
 }
 
-# 检查脚本运行所需 R 包是否已安装。
+# Check that the R packages required by the script are installed.
 check_packages <- function(pkgs) {
   missing <- pkgs[!vapply(pkgs, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing) > 0) {
@@ -22,13 +22,13 @@ check_packages <- function(pkgs) {
   invisible(TRUE)
 }
 
-# 将细胞类型等标签转换为适合文件名使用的安全字符串。
+# Convert labels such as cell types into filename-safe strings.
 sanitize_label <- function(x) {
   x <- gsub("[^A-Za-z0-9]+", "_", x)
   gsub("^_|_$", "", x)
 }
 
-# 统一管理项目中数据、注释表、RDS、图和表的输出路径。
+# Centrally manage project output paths for data, annotation maps, RDS, figures, and tables.
 get_pipeline_paths <- function(project_root = here::here()) {
   root <- file.path(project_root, "snRNAseq_publication_pipeline")
   list(
@@ -44,7 +44,7 @@ get_pipeline_paths <- function(project_root = here::here()) {
   )
 }
 
-# 根据样本名生成样本信息表，包括分组、组织和 MouseID。
+# Build the sample manifest from sample names, including group, tissue, and MouseID.
 make_sample_manifest <- function(samples = c(
   "CTM1", "CTM2", "CTM3",
   "CTS1", "CTS2", "CTS3",
@@ -62,7 +62,7 @@ make_sample_manifest <- function(samples = c(
     transform(MouseID = paste(Group, MouseNumber, sep = "_"))
 }
 
-# 读取 10X 矩阵；如果包含多个层，优先选择 Gene Expression/RNA 层。
+# Read a 10X matrix; when multiple layers are present, prefer the Gene Expression/RNA layer.
 read_10x_counts <- function(data_dir) {
   x <- Seurat::Read10X(data.dir = data_dir)
   if (is.list(x)) {
@@ -73,13 +73,13 @@ read_10x_counts <- function(data_dir) {
   x
 }
 
-# 给矩阵细胞条码加样本前缀，避免合并样本时 barcode 重名。
+# Prefix matrix cell barcodes with the sample name to avoid barcode collisions when merging samples.
 prefix_cells <- function(mat, prefix) {
   colnames(mat) <- paste(prefix, colnames(mat), sep = "_")
   mat
 }
 
-# 多个矩阵只保留共同基因后按列合并。
+# Keep only the genes shared across matrices and column-bind them.
 cbind_common_genes <- function(mats) {
   common_genes <- Reduce(intersect, lapply(mats, rownames))
   if (length(common_genes) == 0) stop("No shared genes across matrices.", call. = FALSE)
@@ -87,7 +87,7 @@ cbind_common_genes <- function(mats) {
   Reduce(Matrix::cbind2, mats)
 }
 
-# 把 manifest 中的样本元数据写入 Seurat 对象。
+# Write the sample metadata from the manifest into the Seurat object.
 add_basic_metadata <- function(obj, sample_row) {
   obj$SampleID <- sample_row$SampleID
   obj$MouseID <- sample_row$MouseID
@@ -97,14 +97,14 @@ add_basic_metadata <- function(obj, sample_row) {
   obj
 }
 
-# 计算线粒体和核糖体基因比例，用于 snRNA-seq QC。
+# Compute mitochondrial and ribosomal gene percentages for snRNA-seq QC.
 add_qc_metrics <- function(obj) {
   obj[["percent.mt"]] <- Seurat::PercentageFeatureSet(obj, pattern = "^mt-|^MT-")
   obj[["percent.ribo"]] <- Seurat::PercentageFeatureSet(obj, pattern = "^Rpl|^Rps|^RPL|^RPS")
   obj
 }
 
-# 对单个 Seurat 对象执行 snRNA-seq QC，并返回过滤后对象和统计摘要。
+# Run snRNA-seq QC on a single Seurat object; return the filtered object and a summary table.
 sn_qc_filter <- function(obj, thresholds) {
   if (is.null(obj) || !inherits(obj, "Seurat")) {
     stop("sn_qc_filter expected a Seurat object, but received NULL or a non-Seurat object.", call. = FALSE)
@@ -125,7 +125,7 @@ sn_qc_filter <- function(obj, thresholds) {
   }
 
   meta_before <- obj@meta.data
-# 根据 feature、UMI 和线粒体比例阈值筛选细胞。
+# Keep cells passing the feature, UMI, and mitochondrial percentage thresholds.
   keep <- with(
     meta_before,
     nFeature_RNA >= thresholds$min_features &
@@ -146,7 +146,7 @@ sn_qc_filter <- function(obj, thresholds) {
     )
   }
 
-# 在原对象中记录 QC 结果，再按通过细胞子集化。
+# Record the QC result in the original object, then subset to the passing cells.
   obj$pass_sn_qc <- keep
   filtered <- subset(obj, cells = rownames(meta_before)[keep])
   if (is.null(filtered) || !inherits(filtered, "Seurat")) {
@@ -163,7 +163,7 @@ sn_qc_filter <- function(obj, thresholds) {
   list(obj = filtered, summary = summary)
 }
 
-# 统一的出版风格 ggplot 主题。
+# Unified publication-style ggplot theme.
 theme_publication <- function(base_size = 10) {
   ggplot2::theme_classic(base_size = base_size) +
     ggplot2::theme(
@@ -176,7 +176,7 @@ theme_publication <- function(base_size = 10) {
     )
 }
 
-# 同时保存 PDF 和 300 dpi PNG 图。
+# Save each plot as both PDF and 300 dpi PNG.
 save_pub_plot <- function(plot, filename, fig_dir, width = 7, height = 5, dpi = 300) {
   ensure_dir(fig_dir)
   base <- file.path(fig_dir, filename)
@@ -185,7 +185,7 @@ save_pub_plot <- function(plot, filename, fig_dir, width = 7, height = 5, dpi = 
   invisible(base)
 }
 
-# 绘制每个样本的 QC 指标小提琴图。
+# Violin plots of QC metrics for each sample.
 plot_qc_violin <- function(meta, title = "snRNA-seq QC metrics") {
   meta |>
     dplyr::select(SampleID, Tissue, nFeature_RNA, nCount_RNA, percent.mt, percent.ribo) |>
@@ -202,7 +202,7 @@ plot_qc_violin <- function(meta, title = "snRNA-seq QC metrics") {
     ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
 }
 
-# 运行 SCTransform、PCA、可选 Harmony、邻居图、聚类和 UMAP。
+# Run SCTransform, PCA, optional Harmony, neighbor graph, clustering, and UMAP.
 run_sctransform_embedding <- function(
     obj,
     dims = 1:30,
@@ -213,13 +213,13 @@ run_sctransform_embedding <- function(
     min_dist = 0.3,
     sct_method = "glmGamPoi",
     sct_vst_flavor = "v2") {
-# 禁止把样本或 mouse 这类生物重复变量当作 Harmony batch。
+# Forbid using biological-replicate variables such as sample or mouse as the Harmony batch.
   forbidden <- c("sample_id", "sampleid", "sample", "mouse_id", "mouseid", "mouse", "SampleID", "MouseID")
   if (!is.null(harmony_batch_var) && harmony_batch_var %in% forbidden) {
     stop("Do not use SampleID, sample_id, MouseID, or mouse_id as the Harmony batch variable.", call. = FALSE)
   }
 
-# 默认使用 glmGamPoi 加速 SCTransform，并回归线粒体比例。
+# Use glmGamPoi by default to speed up SCTransform, regressing out mitochondrial percentage.
   obj <- Seurat::SCTransform(
     obj,
     method = sct_method,
@@ -229,7 +229,7 @@ run_sctransform_embedding <- function(
   )
   obj <- Seurat::RunPCA(obj, npcs = max(dims), verbose = FALSE)
 
-# 如果提供了真正的技术 batch 变量，则基于 PCA 运行 Harmony。
+# If a genuine technical batch variable is provided, run Harmony on the PCA.
   reduction_for_graph <- "pca"
   if (!is.null(harmony_batch_var) && harmony_batch_var %in% colnames(obj@meta.data)) {
     obj <- harmony::RunHarmony(
@@ -242,7 +242,7 @@ run_sctransform_embedding <- function(
     reduction_for_graph <- "harmony"
   }
 
-# 使用 PCA 或 Harmony 低维空间构建图、聚类并计算 UMAP。
+# Build the graph, cluster, and compute UMAP in the PCA or Harmony low-dimensional space.
   obj <- Seurat::FindNeighbors(obj, reduction = reduction_for_graph, dims = dims)
   obj <- Seurat::FindClusters(obj, resolution = resolution)
   obj <- Seurat::RunUMAP(
@@ -257,7 +257,7 @@ run_sctransform_embedding <- function(
   obj
 }
 
-# 使用 SingleR 进行单细胞注释，并按 Seurat cluster 做多数投票生成主标签。
+# Annotate cells with SingleR and majority-vote per Seurat cluster to derive the main label.
 run_singler_main <- function(obj, ref, labels = ref$label.main, assay = "SCT", workers = 6) {
   sce <- as.SingleCellExperiment(obj, assay = assay)
   pred <- SingleR::SingleR(
@@ -269,7 +269,7 @@ run_singler_main <- function(obj, ref, labels = ref$label.main, assay = "SCT", w
   )
   obj$CellType_SingleR_Raw <- pred$labels
 
-# 每个 cluster 取 SingleR 原始标签中的多数标签作为 CellType_Main。
+# For each cluster, take the majority SingleR raw label as CellType_Main.
   majority_vote <- tapply(obj$CellType_SingleR_Raw, Seurat::Idents(obj), function(x) {
     tbl <- table(x)
     names(tbl)[which.max(tbl)]
@@ -278,7 +278,7 @@ run_singler_main <- function(obj, ref, labels = ref$label.main, assay = "SCT", w
   obj
 }
 
-# 读取手动注释表，并返回 cluster 到 CellType 的命名向量。
+# Read a manual annotation map and return a named vector mapping cluster to CellType.
 read_annotation_map <- function(path) {
   x <- read.csv(path, stringsAsFactors = FALSE, check.names = FALSE)
   required <- c("Cluster", "CellType")
@@ -288,7 +288,7 @@ read_annotation_map <- function(path) {
   stats::setNames(x$CellType, as.character(x$Cluster))
 }
 
-# 根据当前对象实际 cluster 生成手动注释模板，并合并旧 map 中已有标签。
+# Generate a manual annotation template from the clusters present in the object, merging in labels already in the old map.
 write_annotation_template <- function(obj, map_path, template_path, cluster_col = "seurat_clusters") {
   old_map <- if (file.exists(map_path)) {
     read.csv(map_path, stringsAsFactors = FALSE, check.names = FALSE)
@@ -296,10 +296,10 @@ write_annotation_template <- function(obj, map_path, template_path, cluster_col 
     data.frame(Cluster = character(), CellType = character(), MarkerEvidence = character())
   }
   old_map$Cluster <- as.character(old_map$Cluster)
-# 兼容只含 Cluster/CellType 两列的最简手写 map（read_annotation_map 也只要求这两列）。
+# Support minimal hand-written maps with only Cluster/CellType columns (read_annotation_map also requires only these two).
   if (!"MarkerEvidence" %in% colnames(old_map)) old_map$MarkerEvidence <- ""
 
-# observed 包含当前聚类实际存在的 cluster 和每个 cluster 的细胞数。
+# observed holds the clusters actually present in the current clustering plus the cell count of each cluster.
   observed <- data.frame(
     Cluster = sort(unique(as.character(obj@meta.data[[cluster_col]]))),
     stringsAsFactors = FALSE
@@ -312,13 +312,13 @@ write_annotation_template <- function(obj, map_path, template_path, cluster_col 
   invisible(observed)
 }
 
-# 检查手动注释表是否覆盖当前所有 cluster，且 CellType 不为空。
+# Check that the manual annotation map covers all current clusters with non-empty CellType values.
 validate_annotation_map <- function(obj, map_path, cluster_col = "seurat_clusters") {
   map <- read.csv(map_path, stringsAsFactors = FALSE, check.names = FALSE)
   map$Cluster <- as.character(map$Cluster)
   observed_clusters <- sort(unique(as.character(obj@meta.data[[cluster_col]])))
   mapped_clusters <- sort(unique(as.character(map$Cluster)))
-# missing 表示当前聚类有但 map 没有；extra 表示 map 有但当前聚类没有。
+# missing: clusters in the current clustering but not in the map; extra: in the map but not in the current clustering.
   missing_clusters <- setdiff(observed_clusters, mapped_clusters)
   extra_clusters <- setdiff(mapped_clusters, observed_clusters)
   blank_labels <- map$Cluster[is.na(map$CellType) | trimws(map$CellType) == ""]
@@ -332,11 +332,13 @@ validate_annotation_map <- function(obj, map_path, cluster_col = "seurat_cluster
   )
 }
 
-# 手动注释 gate 的统一入口：写模板、校验 map，未覆盖则以机器可识别方式停止。
-# gate 触发时：写 outputs/gate_evidence/gate_status_<gate_id>.csv（缺哪些 cluster、
-# 各多少细胞、map/template 路径），并以 "GATE[<gate_id>]" 前缀的 stop 退出——
-# render_all.R 据此区分"gate 等待决策"（退出码 10）与真报错（退出码 1）。
-# gate 通过时清除残留状态文件并返回校验结果（含 map）。
+# Unified entry point for the manual annotation gate: write the template, validate the map,
+# and stop in a machine-recognizable way if coverage is incomplete. When the gate triggers:
+# write outputs/gate_evidence/gate_status_<gate_id>.csv (which clusters are pending, how many
+# cells each has, map/template paths) and exit via stop with a "GATE[<gate_id>]" prefix —
+# render_all.R uses this to distinguish "gate awaiting a decision" (exit code 10) from a
+# genuine error (exit code 1). When the gate passes, remove leftover status files and return
+# the validation result (including the map).
 check_annotation_gate <- function(obj, map_path, gate_id, template_path, status_dir, cluster_col = "seurat_clusters") {
   write_annotation_template(obj, map_path, template_path, cluster_col = cluster_col)
   check <- validate_annotation_map(obj, map_path, cluster_col = cluster_col)
@@ -369,7 +371,7 @@ check_annotation_gate <- function(obj, map_path, gate_id, template_path, status_
   )
 }
 
-# 按 cluster 到 CellType 的映射写入最终 CellType_Fine 标签。
+# Apply the cluster-to-CellType mapping to write the final CellType_Fine labels.
 apply_manual_annotation <- function(obj, map, cluster_col = "seurat_clusters", unknown_label = "Unknown") {
   clusters <- as.character(obj@meta.data[[cluster_col]])
   labels <- unname(map[clusters])
@@ -378,7 +380,7 @@ apply_manual_annotation <- function(obj, map, cluster_col = "seurat_clusters", u
   obj
 }
 
-# 统计 marker 在每个分组中的平均表达和表达细胞比例。
+# Compute mean expression and percent of expressing cells for each marker in each group.
 marker_validation_table <- function(obj, markers, group_col = "CellType_Fine", assay = "RNA") {
   obj <- safe_join_layers(obj, assay = assay)
   data_mat <- tryCatch(get_assay_matrix(obj, assay = assay, layer = "data"), error = function(e) NULL)
@@ -388,7 +390,7 @@ marker_validation_table <- function(obj, markers, group_col = "CellType_Fine", a
   }
   markers <- intersect(unique(markers), rownames(data_mat))
   groups <- obj@meta.data[[group_col]]
-# 按细胞类型或 cluster 分组后逐组计算 marker 统计量。
+# Split cells by cell type or cluster, then compute marker statistics group by group.
   split_cells <- split(seq_along(groups), groups)
 
   out <- lapply(names(split_cells), function(g) {
@@ -405,7 +407,7 @@ marker_validation_table <- function(obj, markers, group_col = "CellType_Fine", a
   dplyr::bind_rows(out)
 }
 
-# Seurat v5 多 layer assay 在取矩阵前先合并 layer。
+# For Seurat v5 multi-layer assays, join layers before extracting matrices.
 safe_join_layers <- function(obj, assay = "RNA") {
   if (inherits(obj[[assay]], "Assay5") && length(SeuratObject::Layers(obj[[assay]])) > 1) {
     obj[[assay]] <- SeuratObject::JoinLayers(obj[[assay]])
@@ -413,7 +415,7 @@ safe_join_layers <- function(obj, assay = "RNA") {
   obj
 }
 
-# 兼容 Seurat v5 layer 和旧版 slot 的矩阵读取函数。
+# Matrix accessor compatible with both Seurat v5 layers and legacy slots.
 get_assay_matrix <- function(obj, assay = "RNA", layer = "counts") {
   if (inherits(obj[[assay]], "Assay5")) {
     SeuratObject::GetAssayData(obj, assay = assay, layer = layer)
@@ -422,7 +424,7 @@ get_assay_matrix <- function(obj, assay = "RNA", layer = "counts") {
   }
 }
 
-# 绘制 marker dotplot，并自动忽略对象中不存在的基因。
+# Draw a marker dotplot, silently dropping genes not present in the object.
 make_marker_dotplot <- function(obj, features, group.by = "CellType_Fine", title = NULL) {
   features <- intersect(features, rownames(obj))
   Seurat::DotPlot(obj, features = features, group.by = group.by, cols = c("grey90", "#B2182B")) +
@@ -432,7 +434,7 @@ make_marker_dotplot <- function(obj, features, group.by = "CellType_Fine", title
     ggplot2::theme(axis.text.x = ggplot2::element_text(angle = 45, hjust = 1))
 }
 
-# 统一 Control/Experimental 分组水平，兼容 CT/MIX 等样本名前缀。
+# Normalize group levels to Control/Experimental, tolerating CT/MIX-style sample name prefixes.
 normalize_group_levels <- function(x) {
   x <- as.character(x)
   x[grepl("^control|^ct", x, ignore.case = TRUE)] <- "Control"
@@ -440,7 +442,7 @@ normalize_group_levels <- function(x) {
   factor(x, levels = c("Control", "Experimental"))
 }
 
-# 计算每只 mouse 中各细胞类型的细胞数和比例。
+# Compute the count and proportion of each cell type within each mouse.
 calc_mouse_proportions <- function(obj, celltype_col = "CellType_Fine") {
   meta <- obj@meta.data |>
     dplyr::mutate(Group = normalize_group_levels(Group))
@@ -453,7 +455,7 @@ calc_mouse_proportions <- function(obj, celltype_col = "CellType_Fine") {
 
   all_celltypes <- sort(unique(meta[[celltype_col]]))
 
-# complete 补齐缺失组合，使某 mouse 中不存在的细胞类型比例记为 0。
+# complete() fills in missing combinations so cell types absent from a mouse get proportion 0.
   counts |>
     tidyr::complete(
       Tissue,
@@ -465,7 +467,7 @@ calc_mouse_proportions <- function(obj, celltype_col = "CellType_Fine") {
     dplyr::mutate(Proportion = CellCount / TotalCells, Percentage = 100 * Proportion)
 }
 
-# 对每个组织和细胞类型做 mouse-level 组间比例检验。
+# Mouse-level between-group proportion tests for each tissue and cell type.
 test_mouse_proportions <- function(prop_df) {
   prop_df |>
     dplyr::group_by(Tissue, CellType) |>
@@ -475,7 +477,7 @@ test_mouse_proportions <- function(prop_df) {
       Mean_Control = mean(Percentage[Group == "Control"], na.rm = TRUE),
       Mean_Experimental = mean(Percentage[Group == "Experimental"], na.rm = TRUE),
       Delta_Percentage = Mean_Experimental - Mean_Control,
-# 每组至少 2 只 mouse 时才进行 Wilcoxon 检验。
+# Run the Wilcoxon test only when each group has at least 2 mice.
       P_Value = ifelse(
         N_Control >= 2 && N_Experimental >= 2,
         stats::wilcox.test(Percentage ~ Group, exact = FALSE)$p.value,
@@ -486,7 +488,7 @@ test_mouse_proportions <- function(prop_df) {
     dplyr::mutate(FDR = stats::p.adjust(P_Value, method = "BH"))
 }
 
-# 对指定细胞类型按 MouseID 聚合 raw counts，生成 pseudobulk 矩阵。
+# Aggregate raw counts by MouseID for a given cell type to build a pseudobulk matrix.
 make_pseudobulk <- function(
     obj,
     celltype,
@@ -498,7 +500,7 @@ make_pseudobulk <- function(
   obj <- safe_join_layers(obj, assay = assay)
   counts <- get_assay_matrix(obj, assay = assay, layer = "counts")
   meta <- obj@meta.data
-# 只保留目标细胞类型的细胞。
+# Keep only cells of the target cell type.
   cells <- rownames(meta)[meta[[celltype_col]] == celltype]
   if (length(cells) == 0) return(NULL)
 
@@ -509,13 +511,13 @@ make_pseudobulk <- function(
     dplyr::count(.data[[sample_col]], name = "N_Cells") |>
     dplyr::filter(N_Cells >= min_cells_per_mouse)
 
-# 过滤细胞数过少的 mouse，并要求至少 4 个 pseudobulk 样本且包含两组。
+# Drop mice with too few cells; require at least 4 pseudobulk samples spanning both groups.
   keep_samples <- cell_counts[[sample_col]]
   meta_sub <- meta_sub[meta_sub[[sample_col]] %in% keep_samples, , drop = FALSE]
   if (length(unique(meta_sub[[sample_col]])) < 4) return(NULL)
   if (length(unique(meta_sub$Group)) < 2) return(NULL)
 
-# 对每只 mouse 内所有目标细胞的 raw counts 求和。
+# Sum raw counts over all target cells within each mouse.
   split_cells <- split(rownames(meta_sub), meta_sub[[sample_col]])
   pb_counts <- do.call(cbind, lapply(split_cells, function(cell_ids) {
     Matrix::rowSums(counts[, cell_ids, drop = FALSE])
@@ -523,7 +525,7 @@ make_pseudobulk <- function(
   colnames(pb_counts) <- names(split_cells)
   pb_counts <- round(as.matrix(pb_counts))
 
-# 构建与 pseudobulk 矩阵列顺序一致的样本信息表。
+# Build a sample info table aligned with the column order of the pseudobulk matrix.
   sample_info <- meta_sub |>
     dplyr::distinct(MouseID = .data[[sample_col]], Group, Tissue) |>
     dplyr::left_join(cell_counts, by = stats::setNames(sample_col, "MouseID")) |>
@@ -534,7 +536,7 @@ make_pseudobulk <- function(
   list(counts = pb_counts, sample_info = sample_info)
 }
 
-# 使用 edgeR quasi-likelihood 框架进行 pseudobulk 差异分析。
+# Pseudobulk differential expression with the edgeR quasi-likelihood framework.
 run_edgeR_pseudobulk <- function(pb, ref_group = "Control", contrast_group = "Experimental") {
   group <- stats::relevel(factor(pb$sample_info$Group), ref = ref_group)
   dge <- edgeR::DGEList(counts = pb$counts, group = group)
@@ -543,7 +545,7 @@ run_edgeR_pseudobulk <- function(pb, ref_group = "Control", contrast_group = "Ex
   dge <- edgeR::calcNormFactors(dge)
   design <- stats::model.matrix(~ group)
   colnames(design) <- make.names(colnames(design))
-# 估计离散度后拟合 GLM，并检验 Experimental 相对 Control 的系数。
+# Estimate dispersion, fit the GLM, and test the Experimental-vs-Control coefficient.
   dge <- edgeR::estimateDisp(dge, design)
   fit <- edgeR::glmQLFit(dge, design, robust = TRUE)
   coef_name <- grep(paste0("group", contrast_group), colnames(design), value = TRUE)[1]
@@ -555,7 +557,7 @@ run_edgeR_pseudobulk <- function(pb, ref_group = "Control", contrast_group = "Ex
     dplyr::arrange(FDR, dplyr::desc(abs(logFC)))
 }
 
-# 可选 DESeq2 pseudobulk 差异分析，作为 edgeR 结果的补充。
+# Optional DESeq2 pseudobulk differential expression as a complement to the edgeR results.
 run_deseq2_pseudobulk <- function(pb, ref_group = "Control", contrast_group = "Experimental") {
   coldata <- pb$sample_info
   coldata$Group <- stats::relevel(factor(coldata$Group), ref = ref_group)
@@ -564,7 +566,7 @@ run_deseq2_pseudobulk <- function(pb, ref_group = "Control", contrast_group = "E
     colData = coldata,
     design = ~Group
   )
-# 过滤低表达基因，减少不稳定检验。
+# Filter lowly expressed genes to avoid unstable tests.
   keep <- rowSums(DESeq2::counts(dds) >= 10) >= 2
   dds <- dds[keep, ]
   dds <- DESeq2::DESeq(dds, quiet = TRUE)
@@ -577,7 +579,7 @@ run_deseq2_pseudobulk <- function(pb, ref_group = "Control", contrast_group = "E
     dplyr::arrange(FDR, dplyr::desc(abs(logFC)))
 }
 
-# 绘制 DEG 火山图，按 FDR 和 logFC 标记上调、下调和不显著基因。
+# Volcano plot of DEGs, labeling up-, down-, and non-significant genes by FDR and logFC.
 plot_deg_volcano <- function(res, title, fdr_cutoff = 0.05, logfc_cutoff = 0.5) {
   res |>
     dplyr::mutate(

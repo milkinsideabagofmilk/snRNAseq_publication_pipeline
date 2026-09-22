@@ -10,9 +10,10 @@ output:
 ---
 
 ```{r setup, include=FALSE}
-# 设置报告运行环境，并加载流程共用函数。
+# Set up the report runtime environment and load shared pipeline functions.
 knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
-# 从 Rmd 文件位置或工作目录定位 pipeline 根（兼容 render 与交互运行，不依赖 .git/.Rproj）。
+# Locate the pipeline root from the Rmd file location or working directory
+# (works for both render and interactive runs; does not rely on .git/.Rproj).
 input_dir <- tryCatch(
   dirname(normalizePath(knitr::current_input(dir = TRUE), mustWork = FALSE)),
   error = function(e) ""
@@ -34,7 +35,7 @@ source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
 ## Configuration
 
 ```{r libraries}
-# 从集中参数文件读取 CellChat 设置。
+# Read CellChat settings from the centralized parameter file.
 source(file.path(pipeline_root, "config", "pipeline_params.R"))
 
 check_packages(c("Seurat", "SeuratObject", "CellChat", "patchwork", "dplyr", "ggplot2", "future", "here"))
@@ -46,8 +47,9 @@ library(dplyr)
 library(ggplot2)
 library(future)
 
-# CellChat has high peak memory use; workers 上限由 config/pipeline_params.R 的
-# cellchat_workers 控制（2026-08-06 OOM 事故后独立于全局 n_workers，默认 2）。
+# CellChat has high peak memory use; the workers cap is controlled by
+# cellchat_workers in config/pipeline_params.R (kept independent of the global
+# n_workers, default 2, after the 2026-08-06 OOM incident).
 plan("multicore", workers = cellchat_workers)
 options(future.fork.enable = TRUE)
 options(future.globals.maxSize = future_globals_maxsize)
@@ -113,7 +115,7 @@ run_cellchat_pair <- function(obj, tissue_name) {
 sc_spleen <- readRDS(file.path(paths$rds_dir, "01_spleen_annotated.rds"))
 chat_spleen <- run_cellchat_pair(sc_spleen, "Spleen")
 
-# sources/targets 清单由 config/pipeline_params.R 定义（cellchat_spleen_sources / cellchat_spleen_targets）。
+# The sources/targets lists are defined in config/pipeline_params.R (cellchat_spleen_sources / cellchat_spleen_targets).
 spleen_sources <- intersect(cellchat_spleen_sources, unique(sc_spleen$CellType_Fine))
 spleen_targets <- intersect(cellchat_spleen_targets, unique(sc_spleen$CellType_Fine))
 
@@ -136,7 +138,7 @@ if (length(spleen_sources) > 0 && length(spleen_targets) > 0) {
 sc_bm <- readRDS(file.path(paths$rds_dir, "02_bonemarrow_annotated.rds"))
 chat_bm <- run_cellchat_pair(sc_bm, "BoneMarrow")
 
-# targets 清单由 config/pipeline_params.R 定义（cellchat_bm_targets）。
+# The targets list is defined in config/pipeline_params.R (cellchat_bm_targets).
 bm_targets <- intersect(cellchat_bm_targets, unique(sc_bm$CellType_Fine))
 if (length(bm_targets) > 0) {
   p_bm_bubble <- netVisual_bubble(
