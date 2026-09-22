@@ -1,5 +1,5 @@
 ---
-title: "08 - Optional CellChat analysis"
+title: "08 - CellChat analysis"
 author: "snRNA-seq publication pipeline"
 date: "`r Sys.Date()`"
 output:
@@ -46,8 +46,9 @@ library(dplyr)
 library(ggplot2)
 library(future)
 
-# CellChat has high peak memory use; workers 上限由 config/pipeline_params.R 的 n_workers 控制。
-plan("multicore", workers = n_workers)
+# CellChat has high peak memory use; workers 上限由 config/pipeline_params.R 的
+# cellchat_workers 控制（2026-08-06 OOM 事故后独立于全局 n_workers，默认 2）。
+plan("multicore", workers = cellchat_workers)
 options(future.fork.enable = TRUE)
 options(future.globals.maxSize = future_globals_maxsize)
 

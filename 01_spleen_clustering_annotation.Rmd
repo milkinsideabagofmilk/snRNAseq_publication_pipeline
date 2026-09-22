@@ -29,6 +29,8 @@ if (is.na(pipeline_root)) {
 }
 knitr::opts_knit$set(root.dir = pipeline_root)
 source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
+# gate 聚类路径与 run_gate_evidence.R 共用（gate_definitions / 共享聚类函数）。
+source(file.path(pipeline_root, "R", "gate_cluster_helpers.R"))
 ```
 
 ## Configuration
@@ -60,6 +62,9 @@ if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
   RhpcBLASctl::omp_set_num_threads(1)
 }
 
+# 固定随机种子，保证聚类编号可复现（agent 注释 gate 的证据脚本依赖此一致性）。
+set.seed(seed)
+
 # Seurat uses the future backend in expensive steps such as SCTransform.
 plan("multicore", workers = n_workers)
 options(future.fork.enable = TRUE)
@@ -68,6 +73,8 @@ options(future.globals.maxSize = future_globals_maxsize)
 paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "01_Spleen_Annotation"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "01_Spleen_Annotation"))
+# 本脚本两个 gate（B/T 系）的登记表：lineage 正则与 map 文件以 gate_definitions 为准。
+gate_defs <- gate_definitions()
 
 # 聚类维度、分辨率、Harmony 设置与 marker panel 统一由 config/pipeline_params.R 定义。
 ```
@@ -84,12 +91,16 @@ message("Spleen cells after QC: ", ncol(sc_spleen))
 ## Main clustering without sample-level Harmony
 
 ```{r main_clustering}
-# 对全部脾脏细胞执行 SCTransform、PCA、邻居图、聚类和 UMAP。
-sc_spleen <- run_sctransform_embedding(
+# 主聚类 + SingleR 主注释走 gate_cluster_helpers.R 的共享函数，
+# 与 run_gate_evidence.R 严格同一路径（cluster 编号一致的前提）。
+ref_immgen <- celldex::ImmGenData()
+sc_spleen <- run_main_clustering_annotation(
   sc_spleen,
+  ref = ref_immgen,
   dims = dims_main,
   resolution = cluster_res_main,
-  harmony_batch_var = harmony_batch_var
+  harmony_batch_var = harmony_batch_var,
+  workers = n_workers
 )
 
 p_clusters <- DimPlot(sc_spleen, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.2) +
@@ -102,11 +113,7 @@ save_pub_plot(p_clusters, "01_spleen_umap_clusters", fig_dir, width = 10, height
 ## SingleR main annotation
 
 ```{r singler}
-# 使用 ImmGen 参考集对脾脏细胞做 SingleR 主类别注释。
-ref_immgen <- celldex::ImmGenData()
-sc_spleen <- run_singler_main(sc_spleen, ref_immgen, workers = n_workers)
-sc_spleen$CellType_Fine <- sc_spleen$CellType_Main
-
+# SingleR 主类别注释结果可视化（注释计算已在上一步共享函数内完成）。
 p_main <- DimPlot(sc_spleen, reduction = "umap", group.by = "CellType_Main", split.by = "Group", pt.size = 0.2) +
   labs(title = "Spleen main annotation")
 print(p_main)
@@ -122,34 +129,26 @@ write.csv(main_table, file.path(table_dir, "01_spleen_main_annotation_counts.csv
 
 ```{r bcell_refinement}
 # 根据 SingleR/主注释筛选 B 细胞相关标签，进入 B-cell compartment 精细聚类。
-b_labels <- grep("B cells|B cell|B lymph", unique(c(sc_spleen$CellType_SingleR_Raw, sc_spleen$CellType_Main)), value = TRUE, ignore.case = TRUE)
-b_cells_keep <- rownames(sc_spleen@meta.data)[sc_spleen$CellType_SingleR_Raw %in% b_labels | sc_spleen$CellType_Main %in% b_labels]
-if (length(b_cells_keep) < min_cells_for_refinement) stop("Too few spleen B-lineage cells for refinement. Check SingleR labels.")
-
-b_cells <- subset(sc_spleen, cells = b_cells_keep)
-DefaultAssay(b_cells) <- "RNA"
-b_cells <- run_sctransform_embedding(
-  b_cells,
+# 筛选正则与 lineage 名取自 gate_definitions（与证据脚本同一定义处）。
+b_cells <- prepare_lineage_compartment(
+  sc_spleen,
+  label_pattern = gate_defs[["01_bcell"]]$label_pattern,
   dims = dims_subset,
   resolution = cluster_res_spleen_subset,
-  harmony_batch_var = harmony_batch_var
+  harmony_batch_var = harmony_batch_var,
+  min_cells = min_cells_for_refinement,
+  lineage_label = gate_defs[["01_bcell"]]$lineage
 )
 
-b_map_path <- file.path(paths$map_dir, "spleen_bcell_manual_map.csv")
+b_map_path <- file.path(paths$map_dir, gate_defs[["01_bcell"]]$map_file)
 b_template_path <- file.path(table_dir, "01_spleen_bcell_annotation_template_current_clusters.csv")
-# 写出当前 B 细胞聚类模板，并检查手动注释表是否覆盖所有 cluster。
-write_annotation_template(b_cells, b_map_path, b_template_path)
-b_map_check <- validate_annotation_map(b_cells, b_map_path)
-if (!isTRUE(b_map_check$ok)) {
-  stop(
-    "Spleen B-cell manual annotation map does not match current clustering. ",
-    "Review marker plots/tables and update: ", b_map_path, ". ",
-    "Current template written to: ", b_template_path, ". ",
-    "Missing clusters: ", paste(b_map_check$missing_clusters, collapse = ","), ". ",
-    "Blank labels: ", paste(b_map_check$blank_labels, collapse = ","),
-    call. = FALSE
-  )
-}
+# 写模板并校验手动注释表；未覆盖时写 gate 状态文件并以 GATE[01_bcell] 前缀停止。
+b_map_check <- check_annotation_gate(
+  b_cells, b_map_path,
+  gate_id = "01_bcell",
+  template_path = b_template_path,
+  status_dir = paths$gate_dir
+)
 b_cells <- apply_manual_annotation(b_cells, b_map_check$map, unknown_label = "Unknown spleen B cluster")
 
 # B 细胞 marker panel 由 config/pipeline_params.R 提供，用于验证手动 fine label。
@@ -179,34 +178,26 @@ write.csv(b_validation_fine, file.path(table_dir, "01_spleen_bcell_marker_valida
 
 ```{r tcell_refinement}
 # 根据 SingleR/主注释筛选 T 细胞相关标签，进入 T-cell compartment 精细聚类。
-t_labels <- grep("T cells|T cell|T lymph", unique(c(sc_spleen$CellType_SingleR_Raw, sc_spleen$CellType_Main)), value = TRUE, ignore.case = TRUE)
-t_cells_keep <- rownames(sc_spleen@meta.data)[sc_spleen$CellType_SingleR_Raw %in% t_labels | sc_spleen$CellType_Main %in% t_labels]
-if (length(t_cells_keep) < min_cells_for_refinement) stop("Too few spleen T-lineage cells for refinement. Check SingleR labels.")
-
-t_cells <- subset(sc_spleen, cells = t_cells_keep)
-DefaultAssay(t_cells) <- "RNA"
-t_cells <- run_sctransform_embedding(
-  t_cells,
+# 筛选正则与 lineage 名取自 gate_definitions（与证据脚本同一定义处）。
+t_cells <- prepare_lineage_compartment(
+  sc_spleen,
+  label_pattern = gate_defs[["01_tcell"]]$label_pattern,
   dims = dims_subset,
   resolution = cluster_res_spleen_subset,
-  harmony_batch_var = harmony_batch_var
+  harmony_batch_var = harmony_batch_var,
+  min_cells = min_cells_for_refinement,
+  lineage_label = gate_defs[["01_tcell"]]$lineage
 )
 
-t_map_path <- file.path(paths$map_dir, "spleen_tcell_manual_map.csv")
+t_map_path <- file.path(paths$map_dir, gate_defs[["01_tcell"]]$map_file)
 t_template_path <- file.path(table_dir, "01_spleen_tcell_annotation_template_current_clusters.csv")
-# 写出当前 T 细胞聚类模板，并检查手动注释表是否覆盖所有 cluster。
-write_annotation_template(t_cells, t_map_path, t_template_path)
-t_map_check <- validate_annotation_map(t_cells, t_map_path)
-if (!isTRUE(t_map_check$ok)) {
-  stop(
-    "Spleen T-cell manual annotation map does not match current clustering. ",
-    "Review marker plots/tables and update: ", t_map_path, ". ",
-    "Current template written to: ", t_template_path, ". ",
-    "Missing clusters: ", paste(t_map_check$missing_clusters, collapse = ","), ". ",
-    "Blank labels: ", paste(t_map_check$blank_labels, collapse = ","),
-    call. = FALSE
-  )
-}
+# 写模板并校验手动注释表；未覆盖时写 gate 状态文件并以 GATE[01_tcell] 前缀停止。
+t_map_check <- check_annotation_gate(
+  t_cells, t_map_path,
+  gate_id = "01_tcell",
+  template_path = t_template_path,
+  status_dir = paths$gate_dir
+)
 t_cells <- apply_manual_annotation(t_cells, t_map_check$map, unknown_label = "Unknown spleen T cluster")
 
 # T 细胞 marker panel 由 config/pipeline_params.R 提供，用于区分 naive、memory、Tfh、Treg 和 cytotoxic T 等状态。

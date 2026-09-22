@@ -168,7 +168,10 @@ sample_results <- tryCatch(
         thresholds = qc_thresholds[[manifest$Tissue[[i]]]]
       )
     },
-    future.seed = TRUE
+    future.seed = TRUE,
+    # 一样本一 future（动态调度）：默认分块会把 12 个样本静态切成
+    # 6 workers × 2 样本，无负载均衡，且同组任一样本报错会连坐丢失另一样本。
+    future.chunk.size = 1
   ),
   finally = future::plan(future::sequential)
 )

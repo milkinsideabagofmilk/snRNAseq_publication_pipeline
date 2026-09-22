@@ -6,7 +6,10 @@
 
 ## ===== 全局 =====
 seed <- 20260717L                       # 随机种子（00 逐样本派生 scDblFinder/SoupX 种子）
-n_workers <- 6L                         # 外层并行 workers 上限（00 样本循环、SingleR、CellChat）
+n_workers <- 6L                         # 外层并行 workers 上限（00 样本循环、SingleR）
+cellchat_workers <- 2L                  # 08 CellChat 专用 workers：峰值内存随 worker 数线性叠加，
+                                        # 2026-08-06 用全局 n_workers=6 时 computeCommunProb 把
+                                        # WSL 82GB 内存吃光触发 OOM（宿主机仅 94GB），降为 2
 parallel_backend <- "multicore"         # 样本级并行后端：multicore(fork，推荐) / multisession / sequential。
                                         # 当前环境为 WSL2，PSOCK(socket) 集群对长任务收集结果会挂死
                                         # （2026-08-03 用 base R parallel::makeCluster("PSOCK") 复现确认），
@@ -22,16 +25,17 @@ doublet_rate_warning_difference <- 0.05 # 观察率 vs 期望率告警阈值（�
 doublet_rate_warning_fold <- 2          # 观察率 vs 期望率告警阈值（倍数）
 remove_scDblFinder_doublets <- FALSE    # first-pass 默认只标记不剔除；复核分数分布后再开
 
+# max_percent_mt 两组织统一 0.5%（2026-08-10 用户拍板：所有样本 mt<0.5%；原脾 5%/髓 3%）
 qc_thresholds <- list(
   Spleen = list(
     min_features = 100, max_features = 3000,
     min_counts = 500, max_counts = Inf,
-    max_percent_mt = 5
+    max_percent_mt = 0.5
   ),
   BoneMarrow = list(
     min_features = 100, max_features = 4500,
     min_counts = 500, max_counts = Inf,
-    max_percent_mt = 3
+    max_percent_mt = 0.5
   )
 )
 
@@ -124,11 +128,8 @@ kegg_pvalue_cutoff <- 0.05
 ## ===== 07 publication 导出 =====
 top_n_deg_per_celltype <- 25          # 合并 DEG 表中每个组织+细胞类型保留的 top DEG 数
 
-## ===== 08 CellChat（可选） =====
+## ===== 08 CellChat =====
 cellchat_min_cells <- 10              # filterCommunication 的 min.cells
 cellchat_spleen_sources <- c("Tfh cells", "Naive CD4 T cells", "Central memory CD4 T cells")
 cellchat_spleen_targets <- c("GC B cells", "Plasma cell-like", "Naive B cells", "Memory B cell-like")
 cellchat_bm_targets <- c("Plasma cell-like", "Plasmablast-like", "Naive or mature B cells")
-
-## ===== render_all.R =====
-run_optional_cellchat <- FALSE        # TRUE 时 render_all 追加渲染 08

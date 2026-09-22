@@ -29,6 +29,8 @@ if (is.na(pipeline_root)) {
 }
 knitr::opts_knit$set(root.dir = pipeline_root)
 source(file.path(pipeline_root, "R", "pipeline_helpers.R"))
+# gate 聚类路径与 run_gate_evidence.R 共用（gate_definitions / 共享聚类函数）。
+source(file.path(pipeline_root, "R", "gate_cluster_helpers.R"))
 ```
 
 ## Configuration
@@ -60,6 +62,9 @@ if (requireNamespace("RhpcBLASctl", quietly = TRUE)) {
   RhpcBLASctl::omp_set_num_threads(1)
 }
 
+# 固定随机种子，保证聚类编号可复现（agent 注释 gate 的证据脚本依赖此一致性）。
+set.seed(seed)
+
 # Seurat uses the future backend in expensive steps such as SCTransform.
 plan("multicore", workers = n_workers)
 options(future.fork.enable = TRUE)
@@ -68,6 +73,8 @@ options(future.globals.maxSize = future_globals_maxsize)
 paths <- get_pipeline_paths(project_root = dirname(pipeline_root))
 fig_dir <- ensure_dir(file.path(paths$fig_dir, "02_BM_Annotation"))
 table_dir <- ensure_dir(file.path(paths$table_dir, "02_BM_Annotation"))
+# 本脚本 gate（骨髓 B lineage）的登记表：lineage 正则与 map 文件以 gate_definitions 为准。
+gate_defs <- gate_definitions()
 
 # 聚类维度、分辨率、Harmony 设置与 marker panel 统一由 config/pipeline_params.R 定义。
 ```
@@ -84,12 +91,16 @@ message("Bone marrow cells after QC: ", ncol(sc_bm))
 ## Main clustering without sample-level Harmony
 
 ```{r main_clustering}
-# 对全部骨髓细胞执行 SCTransform、PCA、邻居图、聚类和 UMAP。
-sc_bm <- run_sctransform_embedding(
+# 主聚类 + SingleR 主注释走 gate_cluster_helpers.R 的共享函数，
+# 与 run_gate_evidence.R 严格同一路径（cluster 编号一致的前提）。
+ref_immgen <- celldex::ImmGenData()
+sc_bm <- run_main_clustering_annotation(
   sc_bm,
+  ref = ref_immgen,
   dims = dims_main,
   resolution = cluster_res_main,
-  harmony_batch_var = harmony_batch_var
+  harmony_batch_var = harmony_batch_var,
+  workers = n_workers
 )
 
 p_clusters <- DimPlot(sc_bm, reduction = "umap", group.by = "seurat_clusters", split.by = "Group", pt.size = 0.2) +
@@ -102,11 +113,7 @@ save_pub_plot(p_clusters, "02_bm_umap_clusters", fig_dir, width = 10, height = 5
 ## SingleR main annotation
 
 ```{r singler}
-# 使用 ImmGen 参考集对骨髓细胞做 SingleR 主类别注释。
-ref_immgen <- celldex::ImmGenData()
-sc_bm <- run_singler_main(sc_bm, ref_immgen, workers = n_workers)
-sc_bm$CellType_Fine <- sc_bm$CellType_Main
-
+# SingleR 主类别注释结果可视化（注释计算已在上一步共享函数内完成）。
 p_main <- DimPlot(sc_bm, reduction = "umap", group.by = "CellType_Main", split.by = "Group", pt.size = 0.2) +
   labs(title = "Bone marrow main annotation")
 print(p_main)
@@ -122,39 +129,26 @@ write.csv(main_table, file.path(table_dir, "02_bm_main_annotation_counts.csv"), 
 
 ```{r blineage_refinement}
 # 筛选 B lineage 和 plasma 相关标签，进入骨髓 B lineage 精细聚类。
-b_labels <- grep(
-  "B cells|B cell|B lymph|plasma",
-  unique(c(sc_bm$CellType_SingleR_Raw, sc_bm$CellType_Main)),
-  value = TRUE,
-  ignore.case = TRUE
-)
-b_cells_keep <- rownames(sc_bm@meta.data)[sc_bm$CellType_SingleR_Raw %in% b_labels | sc_bm$CellType_Main %in% b_labels]
-if (length(b_cells_keep) < min_cells_for_refinement) stop("Too few bone marrow B-lineage cells for refinement. Check SingleR labels.")
-
-b_bm <- subset(sc_bm, cells = b_cells_keep)
-DefaultAssay(b_bm) <- "RNA"
-b_bm <- run_sctransform_embedding(
-  b_bm,
+# 筛选正则与 lineage 名取自 gate_definitions（与证据脚本同一定义处）。
+b_bm <- prepare_lineage_compartment(
+  sc_bm,
+  label_pattern = gate_defs[["02_blineage"]]$label_pattern,
   dims = dims_subset,
   resolution = cluster_res_bm_subset,
-  harmony_batch_var = harmony_batch_var
+  harmony_batch_var = harmony_batch_var,
+  min_cells = min_cells_for_refinement,
+  lineage_label = gate_defs[["02_blineage"]]$lineage
 )
 
-bm_map_path <- file.path(paths$map_dir, "bm_blineage_manual_map.csv")
+bm_map_path <- file.path(paths$map_dir, gate_defs[["02_blineage"]]$map_file)
 bm_template_path <- file.path(table_dir, "02_bm_blineage_annotation_template_current_clusters.csv")
-# 写出当前 B lineage 聚类模板，并检查手动注释表是否覆盖所有 cluster。
-write_annotation_template(b_bm, bm_map_path, bm_template_path)
-bm_map_check <- validate_annotation_map(b_bm, bm_map_path)
-if (!isTRUE(b_map_check$ok)) {
-  stop(
-    "Bone marrow B-lineage manual annotation map does not match current clustering. ",
-    "Review marker plots/tables and update: ", bm_map_path, ". ",
-    "Current template written to: ", bm_template_path, ". ",
-    "Missing clusters: ", paste(b_map_check$missing_clusters, collapse = ","), ". ",
-    "Blank labels: ", paste(b_map_check$blank_labels, collapse = ","),
-    call. = FALSE
-  )
-}
+# 写模板并校验手动注释表；未覆盖时写 gate 状态文件并以 GATE[02_blineage] 前缀停止。
+bm_map_check <- check_annotation_gate(
+  b_bm, bm_map_path,
+  gate_id = "02_blineage",
+  template_path = bm_template_path,
+  status_dir = paths$gate_dir
+)
 b_bm <- apply_manual_annotation(b_bm, bm_map_check$map, unknown_label = "Unknown bone marrow B-lineage cluster")
 
 # 骨髓 B lineage marker panel 由 config/pipeline_params.R 提供，用于验证 pro/pre、成熟 B、浆母和浆细胞样标签。

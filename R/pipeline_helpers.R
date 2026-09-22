@@ -39,7 +39,8 @@ get_pipeline_paths <- function(project_root = here::here()) {
     rds_dir = ensure_dir(file.path(root, "outputs", "rds")),
     fig_dir = ensure_dir(file.path(root, "outputs", "figures")),
     table_dir = ensure_dir(file.path(root, "outputs", "tables")),
-    report_dir = ensure_dir(file.path(root, "outputs", "reports"))
+    report_dir = ensure_dir(file.path(root, "outputs", "reports")),
+    gate_dir = file.path(root, "outputs", "gate_evidence")
   )
 }
 
@@ -295,6 +296,8 @@ write_annotation_template <- function(obj, map_path, template_path, cluster_col 
     data.frame(Cluster = character(), CellType = character(), MarkerEvidence = character())
   }
   old_map$Cluster <- as.character(old_map$Cluster)
+# 兼容只含 Cluster/CellType 两列的最简手写 map（read_annotation_map 也只要求这两列）。
+  if (!"MarkerEvidence" %in% colnames(old_map)) old_map$MarkerEvidence <- ""
 
 # observed 包含当前聚类实际存在的 cluster 和每个 cluster 的细胞数。
   observed <- data.frame(
@@ -326,6 +329,43 @@ validate_annotation_map <- function(obj, map_path, cluster_col = "seurat_cluster
     extra_clusters = extra_clusters,
     blank_labels = blank_labels,
     map = stats::setNames(map$CellType, as.character(map$Cluster))
+  )
+}
+
+# 手动注释 gate 的统一入口：写模板、校验 map，未覆盖则以机器可识别方式停止。
+# gate 触发时：写 outputs/gate_evidence/gate_status_<gate_id>.csv（缺哪些 cluster、
+# 各多少细胞、map/template 路径），并以 "GATE[<gate_id>]" 前缀的 stop 退出——
+# render_all.R 据此区分"gate 等待决策"（退出码 10）与真报错（退出码 1）。
+# gate 通过时清除残留状态文件并返回校验结果（含 map）。
+check_annotation_gate <- function(obj, map_path, gate_id, template_path, status_dir, cluster_col = "seurat_clusters") {
+  write_annotation_template(obj, map_path, template_path, cluster_col = cluster_col)
+  check <- validate_annotation_map(obj, map_path, cluster_col = cluster_col)
+  status_path <- file.path(status_dir, paste0("gate_status_", gate_id, ".csv"))
+  if (isTRUE(check$ok)) {
+    if (file.exists(status_path)) file.remove(status_path)
+    return(check)
+  }
+
+  ensure_dir(status_dir)
+  cells_per_cluster <- table(as.character(obj@meta.data[[cluster_col]]))
+  pending <- sort(unique(c(check$missing_clusters, check$blank_labels)))
+  status <- data.frame(
+    gate_id = gate_id,
+    cluster = pending,
+    n_cells = as.integer(cells_per_cluster[pending]),
+    reason = ifelse(pending %in% check$missing_clusters, "missing_in_map", "blank_label"),
+    map_path = map_path,
+    template_path = template_path,
+    timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+    stringsAsFactors = FALSE
+  )
+  write.csv(status, status_path, row.names = FALSE)
+  stop(
+    "GATE[", gate_id, "] manual annotation map does not cover current clustering. ",
+    "Pending clusters: ", paste(pending, collapse = ","), ". ",
+    "Status file: ", status_path, ". Template: ", template_path, ". Map to fill: ", map_path, ". ",
+    "Generate evidence with: Rscript snRNAseq_publication_pipeline/run_gate_evidence.R ", gate_id,
+    call. = FALSE
   )
 }
 

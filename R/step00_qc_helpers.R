@@ -550,22 +550,32 @@ process_one_sample <- function(
 #   "multisession" —— socket 集群（当前 WSL2 环境下对长任务收集结果会挂死，
 #                    2026-08-03 以 base R parallel::makeCluster("PSOCK") 复现确认，勿用）
 #   "sequential"   —— 串行
-# multicore 不可用时回退 multisession 并告警；plan 启动失败回退串行。
+# fork 不可用（典型场景：RStudio Console/Knit；R Core 与 parallelly 均不建议在
+# GUI 前端 fork）时回退 sequential 并告警——绝不回退 multisession。2026-08-03 核实：
+# 旧实现在此静默落入 multisession（本主机已知挂死后端）；且 future.fork.enable
+# 必须在 supportsMulticore() 检查之前设置才有效，与其依赖该选项在 RStudio 强行
+# fork，不如回退串行并提示改用 headless Rscript。plan 启动失败同样回退串行。
 # 返回实际 workers 数和生效的 backend 名称。
 setup_sample_parallel <- function(n_workers, backend = "multicore") {
   available_workers <- max(1L, as.integer(future::availableCores()[[1]]))
   requested_workers <- min(as.integer(n_workers), available_workers)
   workers <- 1L
   active_backend <- "sequential"
+  if (requested_workers > 1L && identical(backend, "multicore") &&
+      !isTRUE(future::supportsMulticore())) {
+    warning(
+      paste0(
+        "multicore (fork) is not supported in this R session ",
+        "(typical cause: running inside RStudio Console/Knit). ",
+        "Falling back to sequential; multisession is never used as a fallback ",
+        "because PSOCK result collection hangs on this WSL2 host. ",
+        "Re-run via headless Rscript to get parallel execution."
+      ),
+      call. = FALSE
+    )
+    backend <- "sequential"
+  }
   if (requested_workers > 1L && !identical(backend, "sequential")) {
-    if (identical(backend, "multicore") && !isTRUE(future::supportsMulticore())) {
-      warning(
-        "multicore is not supported on this system; falling back to multisession.",
-        call. = FALSE
-      )
-      backend <- "multisession"
-    }
-    if (identical(backend, "multicore")) options(future.fork.enable = TRUE)
     tryCatch(
       {
         if (identical(backend, "multicore")) {
